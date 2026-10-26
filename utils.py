@@ -1,4 +1,5 @@
 import os
+import logging
 import re
 import shutil
 import subprocess
@@ -7,6 +8,9 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from diagnostics import get_diagnostics
+
+LOGGER = logging.getLogger("media_downloader.utils")
 
 
 GECKO_BROWSERS = {"firefox", "thunderbird", "librewolf", "waterfox"}
@@ -190,7 +194,7 @@ def get_ffmpeg_download() -> dict | None:
                     "release_url": data.get("html_url", ""),
                 }
     except Exception:
-        pass
+        LOGGER.warning("Could not fetch FFmpeg release metadata", exc_info=True)
     return None
 
 
@@ -389,6 +393,7 @@ def get_latest_pypi_version(package: str = "yt-dlp", timeout: float = 10.0) -> s
         r.raise_for_status()
         return (r.json().get("info") or {}).get("version")
     except Exception:
+        LOGGER.warning("Could not check package update: %s", package, exc_info=True)
         return None
 
 
@@ -461,6 +466,7 @@ def get_latest_app_release(timeout: int = 15) -> Optional[dict]:
         r.raise_for_status()
         return r.json()
     except Exception:
+        LOGGER.warning("Could not check application update", exc_info=True)
         return None
 
 
@@ -500,6 +506,7 @@ def is_newer_app_version(remote_tag: str, local_ver: str) -> bool:
 def download_file(url: str, dest: Path, timeout: int = 600) -> bool:
     partial = dest.with_suffix(dest.suffix + ".part")
     try:
+        LOGGER.info("File download started: url=%s destination=%s", url, dest)
         import requests
 
         headers = {"User-Agent": "Media-Downloader"}
@@ -511,8 +518,10 @@ def download_file(url: str, dest: Path, timeout: int = 600) -> bool:
                     if chunk:
                         f.write(chunk)
         partial.replace(dest)
+        LOGGER.info("File download completed: destination=%s", dest)
         return True
     except Exception:
+        LOGGER.exception("File download failed: url=%s destination=%s", url, dest)
         return False
     finally:
         partial.unlink(missing_ok=True)
@@ -521,8 +530,14 @@ def download_file(url: str, dest: Path, timeout: int = 600) -> bool:
 def create_updater_script(new_exe: Path, current_exe: Path) -> Optional[Path]:
     try:
         bat = current_exe.parent / "Media-Downloader-update.bat"
+        diagnostic = get_diagnostics()
+        logs = diagnostic.directory if diagnostic and diagnostic.directory else ffmpeg_cache_dir().parent.parent / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        update_log = logs / f"media-downloader-updater-{diagnostic.session_id if diagnostic else os.getpid()}.log"
         content = f"""@echo off
 chcp 65001 > nul
+set "UPDATE_LOG={str(update_log).replace('%', '%%')}"
+>>"%UPDATE_LOG%" echo [updater] Starting update
 timeout /t 2 /nobreak > nul
 :wait
 tasklist /FI "IMAGENAME eq {current_exe.name}" 2>NUL | find /I "{current_exe.name}" >NUL
@@ -530,12 +545,22 @@ if "%ERRORLEVEL%"=="0" (
     timeout /t 1 /nobreak > nul
     goto wait
 )
-move /Y "{new_exe}" "{current_exe}" > nul
-start "" "{current_exe}"
+move /Y "{new_exe}" "{current_exe}" >>"%UPDATE_LOG%" 2>&1
+if errorlevel 1 (
+    >>"%UPDATE_LOG%" echo [updater] ERROR: Could not replace the executable
+    exit /b 1
+)
+start "" "{current_exe}" >>"%UPDATE_LOG%" 2>&1
+if errorlevel 1 (
+    >>"%UPDATE_LOG%" echo [updater] ERROR: Could not launch the updated application
+    exit /b 1
+)
+>>"%UPDATE_LOG%" echo [updater] Update completed
 del "%~f0" > nul
 """
         bat.write_text(content, encoding="utf-8")
         return bat
     except Exception:
+        LOGGER.exception("Could not create updater script")
         return None
 

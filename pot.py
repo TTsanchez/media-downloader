@@ -6,11 +6,15 @@ YouTube с 2025 требует PO Token для большинства запро
 """
 
 import os
+import logging
 import socket
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from diagnostics import redact, run_process
+
+LOGGER = logging.getLogger("media_downloader.pot")
 
 PROVIDER_VERSION = "2.0.0"
 PROVIDER_REPO = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git"
@@ -129,21 +133,7 @@ def server_running() -> bool:
 
 
 def _run(cmd: list[str], cwd: Path | None = None, timeout: int = 1800) -> tuple[int, str]:
-    try:
-        r = subprocess.run(
-            cmd,
-            cwd=str(cwd) if cwd else None,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=timeout,
-            creationflags=CREATE_NO_WINDOW,
-        )
-        return r.returncode, (r.stdout or "") + (r.stderr or "")
-    except subprocess.TimeoutExpired:
-        return 1, f"Таймаут после {timeout} с"
-    except Exception as e:
-        return 1, str(e)
+    return run_process(cmd, cwd=cwd, timeout=timeout)
 
 
 def install_provider(log=None) -> tuple[bool, str]:
@@ -256,14 +246,18 @@ def _start_server(log=None) -> bool:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
 
     try:
+        LOGGER.info("Starting PO Token server: node=%s script=%s", node, server_main())
         _proc = subprocess.Popen(
             [node, str(server_main())],
             cwd=str(server_dir()),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
             creationflags=flags,
         )
+        threading.Thread(target=_capture_server_output, args=(_proc,), name="PO-token-output", daemon=True).start()
     except Exception as e:
+        LOGGER.exception("Could not start PO Token server")
         if log:
             log(f"Не удалось запустить PO Token сервер: {e}")
         return False
@@ -272,14 +266,31 @@ def _start_server(log=None) -> bool:
 
     for _ in range(30):
         if server_running():
+            LOGGER.info("PO Token server is ready")
             if log:
                 log("PO Token сервер запущен.")
             return True
+        if _proc is None or _proc.poll() is not None:
+            LOGGER.error("PO Token server exited before becoming ready")
+            return False
         time.sleep(1)
 
     if log:
         log("PO Token сервер не ответил за 30 секунд.")
+    LOGGER.error("PO Token server startup timed out")
     return False
+
+
+def _capture_server_output(proc):
+    try:
+        with proc.stdout:
+            for line in proc.stdout:
+                LOGGER.info("PO Token: %s", redact(line.rstrip())[:12000])
+        code = proc.wait()
+        LOGGER.log(logging.ERROR if proc is _proc else logging.INFO,
+                   "PO Token process exited: pid=%s rc=%s", proc.pid, code)
+    except Exception:
+        LOGGER.exception("Could not capture PO Token output")
 
 
 def _server_pids() -> list[str]:
@@ -316,6 +327,7 @@ def stop_server() -> None:
         proc, _proc = _proc, None
         if proc is None or proc.poll() is not None:
             return
+        LOGGER.info("Stopping owned PO Token process: pid=%s", proc.pid)
         try:
             if os.name == "nt":
                 subprocess.run(
@@ -326,4 +338,5 @@ def stop_server() -> None:
                 proc.terminate()
                 proc.wait(timeout=5)
         except (OSError, subprocess.TimeoutExpired):
+            LOGGER.warning("Normal PO Token shutdown failed; killing process", exc_info=True)
             proc.kill()

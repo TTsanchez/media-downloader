@@ -182,6 +182,16 @@ To use a proxy, enter its address in the **Proxy** field (saved to config):
 
 Empty means a direct connection. The local PO Token server (`127.0.0.1`) always bypasses the proxy.
 
+## Diagnostic reports
+
+Click **Save report** in the bottom toolbar and attach the ZIP to an issue or send it to support, together with the steps that caused the problem. Logs persist under `%LOCALAPPDATA%\Media-Downloader\logs`, including previous sessions. If the window cannot open, retrieve the log files from that directory.
+
+Reports include application and component versions, job IDs, attempts and progress, Python tracebacks, Tk callback and background-thread errors, yt-dlp messages, and exit codes and recent output from child processes. Python-supported native faults are recorded through `faulthandler`; the updater script has its own log.
+
+Regular logs rotate at 2 MiB with three backups. Up to 20 files are retained across sessions; exports include up to 12 recent files and the last 4 MiB of each. Cookies, configuration files, environment variables and downloaded media are excluded. Authorization headers, registered passwords and cookie values, URL parameters and the user's home path are redacted before writing regular logs and when exporting all logs, including native traces. Reports are never uploaded automatically.
+
+Power loss, forced termination and failures before Python starts cannot be intercepted; only the last written events remain. If local application storage is unavailable, logs fall back to temporary storage, then to bounded memory which must be exported before closing.
+
 ## 🛠 Troubleshooting
 
 | Message | Cause and fix |

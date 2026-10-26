@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import shutil
 import tempfile
 import zipfile
@@ -13,11 +14,13 @@ from utils import get_ffmpeg_download
 
 
 TOOLS = ("ffmpeg.exe", "ffprobe.exe")
+LOGGER = logging.getLogger("media_downloader.ffmpeg")
 
 
 def install_ffmpeg(destination: Path, log=None) -> Path:
     """Загружает статическую Windows x64 сборку и сохраняет только нужные файлы."""
     emit = log or (lambda _message: None)
+    LOGGER.info("FFmpeg installation started: destination=%s", destination)
     info = get_ffmpeg_download()
     if not info:
         raise RuntimeError("Не удалось получить сборку FFmpeg. Проверьте подключение к GitHub.")
@@ -43,6 +46,7 @@ def install_ffmpeg(destination: Path, log=None) -> Path:
         expected = info.get("digest")
         actual = "sha256:" + digest.hexdigest()
         if expected and expected != actual:
+            LOGGER.error("FFmpeg checksum mismatch: expected=%s actual=%s", expected, actual)
             raise RuntimeError("Контрольная сумма FFmpeg не совпала. Повторите загрузку.")
         staged = Path(folder) / "staged"
         with zipfile.ZipFile(archive) as package:
@@ -81,4 +85,5 @@ def install_ffmpeg(destination: Path, log=None) -> Path:
                 shutil.copyfile(file, temporary)
                 temporary.replace(target)
     emit("FFmpeg и ffprobe готовы.")
+    LOGGER.info("FFmpeg installation completed: destination=%s", destination)
     return destination / "bin"

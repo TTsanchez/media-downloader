@@ -1,6 +1,8 @@
 import os
+import logging
 from copy import copy
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict
 
@@ -9,6 +11,21 @@ from yt_dlp.utils import DownloadError, ExtractorError
 
 from utils import find_ffmpeg
 from pot import find_deno, server_running, start_server
+from diagnostics import register_cookie_secrets, register_secret, report_exception
+
+
+class YtDlpLogger:
+    def __init__(self, logger):
+        self.logger = logger
+
+    def debug(self, message):
+        self.logger.debug("yt-dlp: %s", message)
+
+    def warning(self, message):
+        self.logger.warning("yt-dlp: %s", message)
+
+    def error(self, message):
+        self.logger.error("yt-dlp: %s", message)
 
 # Порядок клиентов YouTube. Если один не отдаёт видео (страница требует
 # перезагрузки, пустой список форматов), пробуем следующий.
@@ -55,6 +72,7 @@ def build_runtime_opts(clients: list[str] | None = None, proxy: str | None = Non
     opts: dict[str, Any] = {}
 
     if proxy:
+        register_secret(proxy)
         opts["proxy"] = proxy
 
     deno = find_deno()
@@ -101,15 +119,28 @@ class MediaDownloader:
         self._stop_event = threading.Event()
         self._ydl = None
         self._url = ""
+        self.job_id = uuid.uuid4().hex[:12]
+        self.logger = logging.LoggerAdapter(logging.getLogger("media_downloader.downloader"), {"job": self.job_id})
+        self._last_log_state = None
 
     def _emit(self):
+        state = (self.progress.status, int(self.progress.percent // 10))
+        if state != self._last_log_state:
+            self._last_log_state = state
+            self.logger.info("Progress status=%s percent=%.1f bytes=%s/%s speed=%s eta=%s playlist=%s/%s",
+                             self.progress.status, self.progress.percent, self.progress.downloaded,
+                             self.progress.total, self.progress.speed, self.progress.eta,
+                             self.progress.current_index, self.progress.total_count)
+            if self.progress.status == "error":
+                self.logger.error("Job failed: %s", self.progress.error)
         if self.progress_callback:
             try:
                 self.progress_callback(copy(self.progress))
             except Exception:
-                pass
+                report_exception("Ошибка обновления прогресса загрузки")
 
     def stop(self):
+        self.logger.info("Cancellation requested")
         self._stop_event.set()
 
     def extract_info(
@@ -119,9 +150,13 @@ class MediaDownloader:
         cookies_from_browser: str | None = None,
         proxy: str | None = None,
     ) -> Dict[str, Any]:
+        register_cookie_secrets(cookies_file)
+        self.logger.info("Extract info started: url=%s cookies_file=%s browser=%s proxy_enabled=%s",
+                         url, bool(cookies_file), cookies_from_browser, bool(proxy))
         base_opts: Dict[str, Any] = {
             "quiet": True,
-            "no_warnings": True,
+            "no_warnings": False,
+            "logger": YtDlpLogger(self.logger),
             "noplaylist": False,
             "noprogress": True,
             "socket_timeout": 30,
@@ -140,6 +175,7 @@ class MediaDownloader:
             if self._stop_event.is_set():
                 raise RuntimeError("Отменено")
             opts = dict(base_opts)
+            self.logger.info("Extract attempt=%s/%s clients=%s", attempt, MAX_ATTEMPTS, CLIENT_FALLBACKS[attempt - 1])
             ensure_pot_server()
             opts.update(build_runtime_opts(clients=CLIENT_FALLBACKS[attempt - 1], proxy=proxy))
             try:
@@ -163,10 +199,14 @@ class MediaDownloader:
                     info["height"] = max(heights)
                 elif not info.get("height") and vids:
                     info["height"] = None
+                self.logger.info("Extract info completed: playlist=%s height=%s formats=%s",
+                                 "entries" in info, info.get("height"), len(fmts))
                 return info
             except (DownloadError, ExtractorError) as e:
+                self.logger.warning("Extract attempt failed", exc_info=True)
                 last_error = self._clean_error(str(e))
             except Exception as e:
+                self.logger.warning("Extract attempt failed unexpectedly", exc_info=True)
                 last_error = self._clean_error(str(e))
 
             if attempt < MAX_ATTEMPTS and self._should_retry(last_error):
@@ -199,6 +239,11 @@ class MediaDownloader:
         restrict_filenames: bool = True,
         download_archive: str | None = None,
     ):
+        register_cookie_secrets(cookies_file)
+        self.logger.info("Download started: url=%s mode=%s format=%s audio=%s quality=%s playlist=%s:%s "
+                         "cookies_file=%s browser=%s proxy_enabled=%s archive_enabled=%s output=%s",
+                         url, mode, custom_format, audio_format, audio_quality, playlist_start, playlist_end,
+                         bool(cookies_file), cookies_from_browser, bool(proxy), bool(download_archive), output_dir)
         self.progress = DownloadProgress()
         self._url = url
         self.progress.status = "extracting"
@@ -214,6 +259,7 @@ class MediaDownloader:
                 raise ValueError("Проверьте диапазон плейлиста: конец должен быть не меньше начала.")
             output_dir.mkdir(parents=True, exist_ok=True)
         except (OSError, ValueError) as e:
+            self.logger.exception("Download preparation failed")
             self.progress.status = "error"
             self.progress.error = str(e)
             self._emit()
@@ -224,11 +270,12 @@ class MediaDownloader:
 
         opts: Dict[str, Any] = {
             "quiet": True,
-            "no_warnings": True,
+            "no_warnings": False,
+            "logger": YtDlpLogger(self.logger),
             "noplaylist": False,
             "outtmpl": outtmpl,
             "progress_hooks": [self._hook],
-            "noprogress": False,
+            "noprogress": True,
             "continuedl": True,
             "retries": 10,
             "fragment_retries": 10,
@@ -254,6 +301,7 @@ class MediaDownloader:
         ffmpeg = find_ffmpeg()
         if ffmpeg:
             opts["ffmpeg_location"] = ffmpeg
+        self.logger.info("FFmpeg location: %s", ffmpeg or "not found")
 
         if mode == "audio":
             opts["format"] = "ba/best"
@@ -290,6 +338,7 @@ class MediaDownloader:
                     return
 
                 attempt_opts = dict(opts)
+                self.logger.info("Download attempt=%s/%s clients=%s", attempt, MAX_ATTEMPTS, CLIENT_FALLBACKS[attempt - 1])
                 ensure_pot_server()
                 attempt_opts.update(build_runtime_opts(clients=CLIENT_FALLBACKS[attempt - 1], proxy=proxy))
 
@@ -312,11 +361,13 @@ class MediaDownloader:
                         self.progress.status = "cancelled"
                         return
                     last_error = self._clean_error(str(e)) or "Ошибка загрузки"
+                    self.logger.warning("Download attempt failed", exc_info=True)
                 except Exception as e:
                     if self._stop_event.is_set():
                         self.progress.status = "cancelled"
                         return
                     last_error = self._clean_error(str(e)) or "Неизвестная ошибка"
+                    self.logger.warning("Download attempt failed unexpectedly", exc_info=True)
 
                 if attempt < MAX_ATTEMPTS and self._should_retry(last_error):
                     self.progress.status = "extracting"

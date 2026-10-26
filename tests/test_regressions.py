@@ -1,5 +1,6 @@
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -103,7 +104,9 @@ class UpdateTests(unittest.TestCase):
     def test_updater_preserves_cyrillic_paths(self):
         with tempfile.TemporaryDirectory() as folder:
             current = Path(folder) / "Загрузчик.exe"
-            script = utils.create_updater_script(current.with_suffix(".new.exe"), current)
+            diagnostic = SimpleNamespace(directory=Path(folder) / "logs", session_id="test")
+            with patch.object(utils, "get_diagnostics", return_value=diagnostic):
+                script = utils.create_updater_script(current.with_suffix(".new.exe"), current)
             self.assertIsNotNone(script)
             self.assertIn(str(current), script.read_text(encoding="utf-8"))
 

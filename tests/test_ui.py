@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import main
+import diagnostics
 from downloader import DownloadProgress
 
 
@@ -107,6 +108,52 @@ class UITests(unittest.TestCase):
             self.assertLessEqual(bottom, self.app.winfo_rooty() + self.app.winfo_height())
         self.assertGreater(self.app.nb.winfo_height(), 100)
         self.app.withdraw()
+
+    def test_callback_error_is_logged_and_reported_inside_app(self):
+        with tempfile.TemporaryDirectory() as folder:
+            service = diagnostics.Diagnostics(folder, install_hooks=False, enable_faults=False)
+            try:
+                with patch.object(diagnostics, "_service", service), patch.object(main.messagebox, "showerror") as show:
+                    def fail():
+                        raise RuntimeError("test-ui-callback-failure")
+                    self.app._last_error_notice = 0
+                    self.app._post_ui(fail)
+                    self.app._drain_ui_events()
+                    show.assert_called_once()
+                    self.assertIn("Обнаружена ошибка", self.app.status_var.get())
+                text = service.log_file.read_text(encoding="utf-8")
+                self.assertIn("Traceback", text)
+                self.assertIn("test-ui-callback-failure", text)
+            finally:
+                service.close()
+
+    def test_export_button_creates_support_archive(self):
+        with tempfile.TemporaryDirectory() as folder:
+            service = diagnostics.Diagnostics(Path(folder) / "logs", install_hooks=False, enable_faults=False)
+            workers = []
+            actual_thread = threading.Thread
+
+            def worker(*args, **kwargs):
+                result = actual_thread(*args, **kwargs)
+                workers.append(result)
+                return result
+
+            try:
+                destination = Path(folder) / "support.zip"
+                with patch.object(main, "get_diagnostics", return_value=service), patch.object(
+                    main.filedialog, "asksaveasfilename", return_value=str(destination)
+                ), patch.object(main.messagebox, "showinfo") as show, patch.object(main.threading, "Thread", side_effect=worker):
+                    self.app._export_report()
+                    self.assertTrue(self.app._exporting_report)
+                    for task in workers:
+                        task.join(timeout=2)
+                        self.assertFalse(task.is_alive())
+                    self.app._drain_ui_events()
+                    self.assertTrue(destination.is_file())
+                    self.assertFalse(self.app._exporting_report)
+                    show.assert_called_once()
+            finally:
+                service.close()
 
 
 if __name__ == "__main__":

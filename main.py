@@ -1,12 +1,22 @@
 import json
+import logging
 import queue
 import os
 import re
 import sys
 import subprocess
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
+
+from diagnostics import (get_diagnostics, initialize_logging, redact, register_secret,
+                         report_exception, run_process)
+
+if __name__ == "__main__":
+    initialize_logging(notify_fatal=True)
+
+LOGGER = logging.getLogger("media_downloader.ui")
 
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -81,23 +91,7 @@ _CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 def _run_process(cmd, cwd=None, timeout=1800):
     """Запускает команду и возвращает (код возврата, вывод)."""
-    import subprocess
-
-    try:
-        r = subprocess.run(
-            cmd,
-            cwd=str(cwd) if cwd else None,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=timeout,
-            creationflags=_CREATE_NO_WINDOW,
-        )
-        return r.returncode, (r.stdout or "") + (r.stderr or "")
-    except subprocess.TimeoutExpired:
-        return 1, f"Таймаут после {timeout} с"
-    except Exception as e:
-        return 1, str(e)
+    return run_process(cmd, cwd=cwd, timeout=timeout)
 
 
 class VScroll(ttkb.Frame):
@@ -146,6 +140,9 @@ class YTApp(ttkb.Window):
         self._info_downloader = None
         self._updating = False
         self._installing_ffmpeg = False
+        self._exporting_report = False
+        self._last_error_notice = 0.0
+        self._log_storage_warning_shown = False
         self.after(40, self._drain_ui_events)
         self._fit_to_screen()
         try:
@@ -153,7 +150,7 @@ class YTApp(ttkb.Window):
             if os.path.exists(ico):
                 self.iconbitmap(ico)
         except Exception:
-            pass
+            LOGGER.debug("Optional operation failed: __init__", exc_info=True)
         self._set_theme()
         self.downloader = MediaDownloader(progress_callback=self.on_progress)
         self.cookies_path: str | None = None
@@ -184,6 +181,26 @@ class YTApp(ttkb.Window):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._log("Готово. Вставьте ссылку с YouTube и нажмите «Получить информацию»")
         self._check_updates_async()
+        diagnostic = get_diagnostics()
+        if diagnostic:
+            self._log(f"Диагностический журнал: {diagnostic.log_file or 'в памяти (сохраните отчёт до закрытия)'}")
+            tools = dict(diagnostic.context.get("ffmpeg", {}))
+            tools["deno"] = diagnostic.context.get("youtube_components", {}).get("deno")
+            threading.Thread(target=self._probe_component_versions, args=(tools,),
+                             name="Component-versions", daemon=True).start()
+
+    def _probe_component_versions(self, tools):
+        versions = {}
+        for name, path in tools.items():
+            if not path:
+                versions[name] = "not found"
+                continue
+            code, output = run_process([path, "--version" if name == "deno" else "-version"], timeout=5)
+            versions[name] = output.splitlines()[0] if output.strip() and not code else f"unavailable (exit={code})"
+        diagnostic = get_diagnostics()
+        if diagnostic:
+            diagnostic.update_context("component_versions", versions)
+        LOGGER.info("Component versions collected: %s", versions)
 
     def _post_ui(self, callback):
         """Передаёт результат фоновой работы в основной поток Tk."""
@@ -202,7 +219,31 @@ class YTApp(ttkb.Window):
                 callback()
             except Exception:
                 self.report_callback_exception(*sys.exc_info())
+        self._show_pending_errors()
         self.after(40, self._drain_ui_events)
+
+    def report_callback_exception(self, exc, value, traceback):
+        report_exception("Ошибка обработчика интерфейса", (exc, value, traceback))
+
+    def _show_pending_errors(self):
+        diagnostic = get_diagnostics()
+        if not diagnostic or not getattr(self, "_ui_ready", False):
+            return
+        storage_error = getattr(diagnostic.handler, "storage_error", None)
+        if storage_error and not self._log_storage_warning_shown:
+            self._log_storage_warning_shown = True
+            messagebox.showwarning("Журнал диагностики", storage_error)
+        try:
+            title = diagnostic.notifications.get_nowait()
+        except queue.Empty:
+            return
+        self.status_var.set("Обнаружена ошибка — сохраните отчёт")
+        self._log(title)
+        now = time.monotonic()
+        if not self._last_error_notice or now - self._last_error_notice >= 10:
+            self._last_error_notice = now
+            messagebox.showerror("Ошибка приложения", f"{title}.\n\nПодробности записаны в журнал. "
+                                 "Нажмите «Сохранить отчёт» и приложите архив к сообщению об ошибке.")
 
     def _playlist_range(self):
         if self.playlist_all_var.get():
@@ -251,7 +292,7 @@ class YTApp(ttkb.Window):
             self.minsize(900, min(780, h))
             self.geometry(f"{w}x{h}+{x}+{y}")
         except Exception:
-            pass
+            LOGGER.warning("Could not restore window geometry", exc_info=True)
 
     def _set_theme(self):
         for name in ("bootstrap-dark", "darkly", "cyborg", "superhero"):
@@ -274,13 +315,14 @@ class YTApp(ttkb.Window):
                 data = json.loads(path.read_text(encoding="utf-8"))
                 return data if isinstance(data, dict) else {}
         except Exception:
-            pass
+            LOGGER.warning("Could not load configuration; using defaults", exc_info=True)
         return {}
 
     def _save_config(self):
         if not getattr(self, "_ui_ready", False):
             return
         try:
+            register_secret(self.proxy_var.get().strip())
             data = {
                 "output_dir": self.output_dir_var.get(),
                 "audio_format": self.audio_format_var.get(),
@@ -297,7 +339,7 @@ class YTApp(ttkb.Window):
             temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
             temporary.replace(CONFIG_FILE)
         except Exception:
-            pass
+            LOGGER.error("Could not save configuration", exc_info=True)
 
     def _apply_config(self):
         self.output_dir_var.set(self.config.get("output_dir", str(get_default_download_dir())))
@@ -308,6 +350,7 @@ class YTApp(ttkb.Window):
         self.archive_var.set(self.config.get("archive_file") or str(DEFAULT_ARCHIVE_FILE))
         self._saved_browser = self.config.get("browser", "без cookies")
         self.proxy_var.set(self.config.get("proxy", ""))
+        register_secret(self.proxy_var.get().strip())
 
         # Восстанавливаем cookies.txt: для обычных публичных видео они не нужны
         # (yt-dlp идёт анонимным клиентом), но нужны для возрастных/приватных видео
@@ -746,7 +789,9 @@ class YTApp(ttkb.Window):
         self.btn_download.pack(side=LEFT)
         self.btn_stop = ttkb.Button(arow2, text="Остановить", width=16, bootstyle="danger", command=self._stop_download, state="disabled")
         self.btn_stop.pack(side=LEFT, padx=(8, 0))
-        ttkb.Button(arow2, text="Очистить лог", width=14, bootstyle="light-outline", command=self._clear_log).pack(side=LEFT, padx=(8, 0))
+        self.btn_export_report = ttkb.Button(arow2, text="Сохранить отчёт", width=17, bootstyle="info-outline", command=self._export_report)
+        self.btn_export_report.pack(side=LEFT, padx=(8, 0))
+        add_tooltip(self.btn_export_report, "Сохранить ZIP с журналами ошибок и версиями компонентов для поддержки")
         ttkb.Button(arow2, text="Папка загрузок", bootstyle="light-outline", command=self._open_dir).pack(side=LEFT, padx=(8, 0))
         self.ytdlp_lbl = ttkb.Label(arow2, text="yt-dlp: ...", bootstyle="secondary", font=("Segoe UI", 8))
         self.ytdlp_lbl.pack(side=RIGHT, padx=(10, 0))
@@ -781,11 +826,11 @@ class YTApp(ttkb.Window):
             if sel:
                 self.fmt_tree.selection_remove(*sel)
         except Exception:
-            pass
+            LOGGER.debug("Optional operation failed: _on_mode_change", exc_info=True)
         try:
             self.fmt_lbl.config(text="Формат не выбран — используется выбор выше.", bootstyle="secondary")
         except Exception:
-            pass
+            LOGGER.debug("Optional operation failed: _on_mode_change", exc_info=True)
         self._update_state()
 
     def _current_mode(self):
@@ -930,6 +975,7 @@ class YTApp(ttkb.Window):
         try:
             lines = Path(chosen).read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception as e:
+            LOGGER.exception("Operation failed: _queue_add_from_file")
             messagebox.showerror("Очередь", f"Не удалось прочитать файл:\n{e}")
             return
         added = 0
@@ -1002,7 +1048,7 @@ class YTApp(ttkb.Window):
                 tags=tags,
             )
         except Exception:
-            pass
+            LOGGER.debug("Optional operation failed: _queue_update_row", exc_info=True)
 
     def _queue_post(self, item: dict):
         self._post_ui(lambda it=item: self._queue_update_row(it))
@@ -1035,7 +1081,7 @@ class YTApp(ttkb.Window):
             try:
                 self.queue_tree.delete(iid)
             except Exception:
-                pass
+                LOGGER.debug("Optional operation failed: _queue_remove_selected", exc_info=True)
         self._queue_renumber()
 
     def _queue_pick(self) -> dict | None:
@@ -1105,6 +1151,7 @@ class YTApp(ttkb.Window):
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
+            LOGGER.exception("Operation failed: _queue_download_item")
             item["status"] = "ошибка"
             item["error"] = str(e)
             self._queue_post(item)
@@ -1139,6 +1186,7 @@ class YTApp(ttkb.Window):
                 item["error"] = prog.error or "ошибка"
                 self._q_error_count += 1
         except Exception as e:
+            LOGGER.exception("Operation failed: _queue_download_item")
             item["status"] = "ошибка"
             item["error"] = str(e)
             self._q_error_count += 1
@@ -1172,7 +1220,7 @@ class YTApp(ttkb.Window):
             self.btn_q_start.configure(state="normal")
             self.btn_q_stop.configure(state="disabled")
         except Exception:
-            pass
+            LOGGER.debug("Optional operation failed: _queue_finish", exc_info=True)
         done = sum(1 for it in self.queue_items if it["status"] == "готово")
         err = sum(1 for it in self.queue_items if it["status"] == "ошибка")
         cancelled = sum(1 for it in self.queue_items if it["status"] == "отмена")
@@ -1197,14 +1245,18 @@ class YTApp(ttkb.Window):
             try:
                 dl.stop()
             except Exception:
-                pass
+                LOGGER.debug("Optional operation failed: _queue_stop", exc_info=True)
         self.btn_q_stop.configure(state="disabled")
 
     # ---------- log ----------
 
     def _log(self, msg: str):
+        LOGGER.info("%s", msg)
+        self._append_log(redact(msg))
+
+    def _append_log(self, msg: str):
         if threading.get_ident() != self._ui_thread:
-            self._post_ui(lambda: self._log(msg))
+            self._post_ui(lambda: self._append_log(msg))
             return
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_text.configure(state="normal")
@@ -1213,6 +1265,37 @@ class YTApp(ttkb.Window):
             self.log_text.delete("1.0", "250.0")
         self.log_text.see(tk.END)
         self.log_text.configure(state="disabled")
+
+    def _export_report(self):
+        if self._exporting_report:
+            return
+        diagnostic = get_diagnostics() or initialize_logging()
+        chosen = filedialog.asksaveasfilename(
+            title="Сохранить диагностический отчёт", defaultextension=".zip",
+            initialfile=f"Media-Downloader-report-{diagnostic.session_id}.zip",
+            filetypes=[("ZIP report", "*.zip")],
+        )
+        if not chosen:
+            return
+        self._exporting_report = True
+        self.btn_export_report.configure(state="disabled")
+        threading.Thread(target=self._export_report_worker, args=(diagnostic, chosen),
+                         name="Report-export", daemon=True).start()
+
+    def _export_report_worker(self, diagnostic, chosen):
+        try:
+            destination = diagnostic.export(chosen)
+            self._post_ui(lambda: messagebox.showinfo("Отчёт сохранён", f"{destination}\n\n"
+                          "Пришлите этот ZIP вместе с описанием действий перед ошибкой."))
+        except Exception as error:
+            LOGGER.exception("Could not export diagnostic report")
+            self._post_ui(lambda err=redact(error): messagebox.showerror("Не удалось сохранить отчёт", err))
+        finally:
+            self._post_ui(self._finish_report_export)
+
+    def _finish_report_export(self):
+        self._exporting_report = False
+        self.btn_export_report.configure(state="normal")
 
     def _clear_log(self):
         self.log_text.configure(state="normal")
@@ -1266,6 +1349,7 @@ class YTApp(ttkb.Window):
                 os.system(f'xdg-open "{p}"')
             self._log(f"Открыта папка: {p}")
         except Exception as e:
+            LOGGER.exception("Operation failed: _open_dir")
             self._log(f"Не удалось открыть папку: {e}")
 
     def _browse_archive(self):
@@ -1326,7 +1410,7 @@ class YTApp(ttkb.Window):
                 return
             self._post_ui(lambda t=tag,u=url: self._prompt_app_update(t, u))
         except Exception:
-            pass
+            LOGGER.debug("Optional operation failed: _check_app_update_async", exc_info=True)
 
     def _prompt_app_update(self, tag: str, url: str):
         if self._closing or self._updating:
@@ -1367,6 +1451,7 @@ class YTApp(ttkb.Window):
             self._log("Запускаю установщик обновления...")
             self._post_ui(lambda: self._apply_app_update(bat))
         except Exception as e:
+            LOGGER.exception("Operation failed: _app_update_worker")
             self._post_ui(lambda err=str(e): self._app_update_failed(err))
 
     def _apply_app_update(self, bat):
@@ -1374,6 +1459,7 @@ class YTApp(ttkb.Window):
             subprocess.Popen(["cmd", "/c", str(bat)], shell=False, creationflags=_CREATE_NO_WINDOW)
             self._on_close()
         except Exception as e:
+            LOGGER.exception("Operation failed: _apply_app_update")
             self._app_update_failed(str(e))
 
     def _app_update_failed(self, error):
@@ -1412,7 +1498,7 @@ class YTApp(ttkb.Window):
         try:
             self.ytdlp_lbl.config(text=f"yt-dlp: {version or '?'}")
         except Exception:
-            pass
+            LOGGER.debug("Optional operation failed: _set_ytdlp_bottom", exc_info=True)
 
     def _update_ytdlp_async(self):
         if self._updating:
@@ -1579,6 +1665,10 @@ class YTApp(ttkb.Window):
     def _check_ffmpeg(self):
         ffmpeg = find_ffmpeg()
         ffprobe = find_ffprobe()
+        diagnostic = get_diagnostics()
+        if diagnostic:
+            diagnostic.update_context("ffmpeg", {"ffmpeg": ffmpeg, "ffprobe": ffprobe})
+        LOGGER.info("FFmpeg check: ffmpeg=%s ffprobe=%s", ffmpeg, ffprobe)
         if ffmpeg and ffprobe:
             self.ffmpeg_badge.config(text="FFmpeg: найден", bootstyle="success")
             self.ffmpeg_lbl.config(text=f"FFmpeg найден: {ffmpeg}", bootstyle="success")
@@ -1597,6 +1687,13 @@ class YTApp(ttkb.Window):
 
     def _check_components(self):
         deno = find_deno()
+        diagnostic = get_diagnostics()
+        if diagnostic:
+            components = {
+                "deno": deno, "po_token_installed": provider_installed(), "po_token_running": server_running(),
+            }
+            diagnostic.update_context("youtube_components", components)
+            LOGGER.info("YouTube components: %s", components)
         if deno:
             self.deno_lbl.config(text=f"Deno: найден ({deno})", bootstyle="success")
         else:
@@ -1623,10 +1720,12 @@ class YTApp(ttkb.Window):
         try:
             res = check_youtube_network()
         except Exception as e:
+            LOGGER.exception("Operation failed: _check_network")
             self._post_ui(lambda err=str(e): self.net_lbl.config(text=f"Ошибка проверки: {err}", bootstyle="danger"))
             return
         state = res.get("state")
         detail = res.get("detail", "")
+        LOGGER.info("YouTube network diagnostic: state=%s detail=%s", state, detail)
         style = {"ok": "success", "blocked": "danger"}.get(state, "warning")
         self._post_ui(lambda: self.net_lbl.config(text=detail, bootstyle=style))
 
@@ -1701,6 +1800,7 @@ class YTApp(ttkb.Window):
             target = install_ffmpeg(self._ffmpeg_root(), log=self._log)
             self._post_ui(lambda: messagebox.showinfo("FFmpeg", f"Компоненты обработки видео установлены.\n\n{target}"))
         except Exception as e:
+            LOGGER.exception("Operation failed: _download_ffmpeg")
             self._log(f"FFmpeg: {e}")
             self._post_ui(lambda err=str(e): messagebox.showerror("FFmpeg", err))
         finally:
@@ -1745,6 +1845,7 @@ class YTApp(ttkb.Window):
 
             self._post_ui(lambda: self._present_info(url, info))
         except Exception as e:
+            LOGGER.exception("Operation failed: _get_info")
             err = str(e)
             self._log(f"Ошибка: {err}")
             self._post_ui(lambda: self.title_lbl.config(text="Не удалось получить информацию"))
@@ -1867,6 +1968,7 @@ class YTApp(ttkb.Window):
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
+            LOGGER.exception("Operation failed: _download_async")
             messagebox.showerror("Ошибка", f"Не могу создать папку:\n{out_dir}\n\n{e}")
             return
 
@@ -1906,6 +2008,7 @@ class YTApp(ttkb.Window):
         try:
             self.downloader.download(**args)
         except Exception as e:
+            LOGGER.exception("Operation failed: _worker")
             self.downloader.progress.status = "error"
             self.downloader.progress.error = str(e)
             self._log(f"Критическая ошибка: {e}")
@@ -1987,6 +2090,7 @@ class YTApp(ttkb.Window):
             self.downloader.stop()
             self._queue_stop()
         self._save_config()
+        LOGGER.info("Window close requested")
         self._closing = True
         if self._info_downloader is not None:
             self._info_downloader.stop()
@@ -1995,8 +2099,13 @@ class YTApp(ttkb.Window):
 
 
 def main():
+    initialize_logging(notify_fatal=True)
     app = YTApp()
-    app.mainloop()
+    LOGGER.info("Application window ready")
+    try:
+        app.mainloop()
+    finally:
+        LOGGER.info("Application mainloop exited")
 
 
 if __name__ == "__main__":

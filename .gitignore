@@ -29,6 +29,8 @@ cookies*.txt
 .env
 .env.*
 secrets.*
+*.log
+Media-Downloader-report-*.zip
 
 # OS / editor
 Thumbs.db
