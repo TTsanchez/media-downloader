@@ -8,29 +8,22 @@ echo   Media Downloader - сборка .exe
 echo ==========================================
 echo.
 
-where python >nul 2>nul
-if errorlevel 1 (
-    echo [ОШИБКА] Python не найден в PATH. Установите Python 3.10+ с python.org
-    pause
-    exit /b 1
-)
-
-if not exist "venv\" (
+if not exist "venv\Scripts\python.exe" (
     echo Создаю виртуальное окружение...
     python -m venv venv
     if errorlevel 1 goto :fail
 )
 
-call venv\Scripts\activate.bat
+set "BUILD_PYTHON=%~dp0venv\Scripts\python.exe"
 
 echo Ставлю зависимости...
-pip install -q --upgrade pip
+"%BUILD_PYTHON%" -m pip install -q --upgrade pip
 if errorlevel 1 goto :fail
-pip install -q -r requirements.txt
+"%BUILD_PYTHON%" -m pip install -q -r requirements.txt
 if errorlevel 1 goto :fail
 
 echo Подготавливаю встроенные FFmpeg и ffprobe...
-python prepare_ffmpeg.py
+"%BUILD_PYTHON%" prepare_ffmpeg.py
 if errorlevel 1 goto :fail
 
 echo.
@@ -52,9 +45,9 @@ set BUILD_ARGS=--noconfirm --clean --onefile --windowed ^
     --hidden-import=yt_dlp_plugins.extractor.getpot_bgutil_script
 
 if exist "icon.ico" (
-    pyinstaller %BUILD_ARGS% --icon="icon.ico" --add-data "icon.ico;." main.py
+    "%BUILD_PYTHON%" -m PyInstaller %BUILD_ARGS% --icon="icon.ico" --add-data "icon.ico;." main.py
 ) else (
-    pyinstaller %BUILD_ARGS% main.py
+    "%BUILD_PYTHON%" -m PyInstaller %BUILD_ARGS% main.py
 )
 
 if errorlevel 1 goto :fail

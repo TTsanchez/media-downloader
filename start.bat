@@ -7,8 +7,7 @@ if not exist "venv\Scripts\pythonw.exe" (
     echo  Первый запуск. Создаю окружение, это может занять пару минут...
     echo.
     python -m venv venv || goto :fail
-    call venv\Scripts\activate.bat
-    pip install -q --upgrade pip
+    "venv\Scripts\python.exe" -m pip install -q --upgrade pip || goto :fail
 )
 
 fc /b requirements.txt venv\requirements-installed.txt >nul 2>nul
