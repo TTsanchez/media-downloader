@@ -22,7 +22,7 @@ jobs:
         run: python verify_encoding.py
 
       - name: Check syntax
-        run: python -m py_compile main.py downloader.py utils.py pot.py ffmpeg_tools.py bootstrap.py prepare_ffmpeg.py diagnostics.py
+        run: python -m py_compile main.py downloader.py utils.py pot.py ffmpeg_tools.py bootstrap.py prepare_ffmpeg.py diagnostics.py release_notes.py
 
       - name: Install dependencies
         run: pip install -r requirements.txt

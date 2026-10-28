@@ -43,7 +43,7 @@
 
 4. Убедитесь, что файлы компилируются:
    ```bat
-   python -m py_compile main.py downloader.py utils.py pot.py diagnostics.py ffmpeg_tools.py prepare_ffmpeg.py
+   python -m py_compile main.py downloader.py utils.py pot.py diagnostics.py ffmpeg_tools.py bootstrap.py release_notes.py prepare_ffmpeg.py
    ```
    Запустите проверки загрузчика, обновлений, очереди и интерфейса:
    ```bat
@@ -54,6 +54,25 @@
    Проверки Tk автоматически пропускаются, если графический экран недоступен.
    Проверки диагностики моделируют сбои фоновых задач, экспорта и записи на диск; настоящие нативные падения процесса не вызываются.
 5. Сделайте коммит с понятным сообщением и откройте pull request.
+
+## Релизы
+
+Релиз выпускается только по явному решению владельца проекта.
+
+1. Обновите `CHANGELOG.md`: добавьте раздел `## [X.Y.Z] — ГГГГ-ММ-ДД`.
+2. Укажите версию в `version.txt` и прогоните проверки из предыдущего пункта.
+3. Создайте тег и отправьте его:
+   ```bat
+   git tag -a vX.Y.Z -m "Media Downloader X.Y.Z"
+   git push origin vX.Y.Z
+   ```
+4. Workflow `Release` соберёт exe и создаст **черновик** релиза с телом из
+   `CHANGELOG.md`. Сам по себе тег ничего не публикует.
+5. Скачайте exe из черновика и проверьте первый запуск и обновление.
+6. Опубликуйте релиз вручную:
+   ```bat
+   gh release edit vX.Y.Z --draft=false
+   ```
 
 ## Требования к интерфейсу
 
