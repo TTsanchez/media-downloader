@@ -32,6 +32,7 @@ Media Downloader is a simple desktop app for Windows. It runs entirely locally: 
 - 📋 **Download queue** — many links at once, 1–4 threads
 - ⚡ **Shorts** and regular videos
 - 📊 **Progress** — percent, speed, ETA, file size
+- ⏸ **Pause and resume** — continues from where it stopped
 - ⏹ **Cancel** in-flight downloads
 - 🍪 **Cookies** — for age-restricted and private videos
 - 🔁 **Auto-retry** — up to 3 attempts with different strategies
@@ -111,9 +112,9 @@ python main.py
 
 1. **Paste a link** to a video, audio track or playlist.
 2. Click **Get info** — title, channel and duration appear.
-3. On the **Format** tab choose what to download: best quality, video only, or audio only. A **format table** lets you pick an exact resolution, codec and size.
-4. Click **Download**. Progress and log appear at the bottom.
-5. The file is saved to your download folder (**Open folder** button).
+3. On the **Format** tab choose what to download: best quality, video only, or audio only. A **format table** lets you pick an exact resolution, codec and size; a **quality preset** (1080p, 720p, etc.) simply caps the resolution.
+4. Click **Download**. Progress and log appear at the bottom; **Pause** stops the download so it can resume from the same point.
+5. The file is saved to your download folder (**Open folder** button). A completion window offers **Open folder**.
 
 <div align="center">
 <img src="docs/screenshots/03-settings.png" width="49%" alt="Settings">
@@ -124,9 +125,11 @@ python main.py
 
 The **Queue** tab downloads many links at once:
 
-1. Paste links (one per line) or use **From file...** / **Paste**.
+1. Paste links (one per line) or use **From file...** / **Paste**. You can also drop a `.txt` with links onto the app icon — the queue picks it up on launch.
 2. Pick the number of threads (1–4) and click **Add to queue**.
-3. Click **Download all** — each link shows status and percent; **Stop** halts the queue.
+3. Click **Download all** — each link shows status and percent. **Pause** stops the queue so you can continue later; **Stop** cancels it.
+
+The queue persists between launches: unfinished links come back the next time you open the app.
 
 ### ⌨️ Hotkeys
 
