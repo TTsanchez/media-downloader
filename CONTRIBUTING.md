@@ -43,7 +43,7 @@
 
 4. Убедитесь, что файлы компилируются:
    ```bat
-   python -m py_compile main.py downloader.py utils.py pot.py diagnostics.py ffmpeg_tools.py bootstrap.py release_notes.py prepare_ffmpeg.py
+   python -m py_compile main.py downloader.py utils.py pot.py diagnostics.py ffmpeg_tools.py bootstrap.py components.py selftest.py net.py release_notes.py
    ```
    Запустите проверки загрузчика, обновлений, очереди и интерфейса:
    ```bat
@@ -66,8 +66,8 @@
    git tag -a vX.Y.Z -m "Media Downloader X.Y.Z"
    git push origin vX.Y.Z
    ```
-4. Workflow `Release` соберёт exe и создаст **черновик** релиза с телом из
-   `CHANGELOG.md`. Сам по себе тег ничего не публикует.
+4. Workflow `Release` соберёт exe, прогонит самопроверку `--selftest` и создаст
+   **черновик** релиза с телом из `CHANGELOG.md`. Сам по себе тег ничего не публикует.
 5. Скачайте exe из черновика и проверьте первый запуск и обновление.
 6. Опубликуйте релиз вручную:
    ```bat

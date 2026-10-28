@@ -20,6 +20,10 @@ from diagnostics import (get_diagnostics, initialize_logging, redact, register_s
 
 if __name__ == "__main__":
     initialize_logging(notify_fatal=True)
+    if "--selftest" in sys.argv[1:]:
+        import selftest
+
+        sys.exit(selftest.main())
     if not bootstrap.startup():
         sys.exit(1)
 

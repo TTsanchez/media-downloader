@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import bootstrap
+import components
 
 
 class EnsureMinimumTests(unittest.TestCase):
@@ -83,8 +84,8 @@ class PypiTests(unittest.TestCase):
                 "digests": {"sha256": "a" * 64},
             }],
         }
-        with patch.object(bootstrap, "_get_json", return_value=payload):
-            version, url, digest = bootstrap._pypi_wheel("demo")
+        with patch.object(components, "_get_json", return_value=payload):
+            version, url, digest = components._pypi_wheel("demo")
         self.assertEqual(version, "1.2.3")
         self.assertEqual(url, "https://example.com/demo.whl")
         self.assertEqual(digest, "a" * 64)

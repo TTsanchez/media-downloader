@@ -34,6 +34,10 @@ echo.
 "%BUILD_PYTHON%" -m PyInstaller --noconfirm --clean Media-Downloader.spec
 if errorlevel 1 goto :fail
 
+echo Проверяю собранный .exe...
+"%BUILD_PYTHON%" -c "import os,subprocess,sys; r=subprocess.run([r'dist\Media-Downloader.exe','--selftest']); p=os.path.join(os.environ.get('LOCALAPPDATA',''),'Media-Downloader','selftest.txt'); print(open(p,encoding='utf-8').read() if os.path.exists(p) else 'selftest report not found'); sys.exit(r.returncode)"
+if errorlevel 1 goto :fail
+
 echo.
 echo ==========================================
 echo   Готово: dist\Media-Downloader.exe
