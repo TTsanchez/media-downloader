@@ -245,15 +245,22 @@ class _ProgressWindow:
             anchor="w",
         ).pack(fill="x", pady=(6, 0))
         self._done = False
+        # Закрытие крестиком не должно обрывать установку: сворачиваем окно,
+        # иначе startup() увидит «компоненты не установлены» и завершит программу.
+        self._root.protocol("WM_DELETE_WINDOW", self._root.iconify)
         self._root.update_idletasks()
 
     def report(self, message: str, fraction: float | None = None) -> None:
         self._queue.put((message, fraction))
 
     def run(self, worker) -> list[str]:
-        threading.Thread(target=self._work, args=(worker,), daemon=True).start()
+        self._worker_thread = threading.Thread(target=self._work, args=(worker,), daemon=True)
+        self._worker_thread.start()
         self._root.after(80, self._poll)
         self._root.mainloop()
+        # Если окно всё же закрыли другим способом, даём установке завершиться,
+        # а не выходим с ложной ошибкой.
+        self._worker_thread.join()
         return self._errors
 
     def _work(self, worker):

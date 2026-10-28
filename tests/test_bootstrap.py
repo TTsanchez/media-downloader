@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
+import subprocess
+import sys
+import textwrap
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import bootstrap
@@ -89,6 +93,56 @@ class PypiTests(unittest.TestCase):
         self.assertEqual(version, "1.2.3")
         self.assertEqual(url, "https://example.com/demo.whl")
         self.assertEqual(digest, "a" * 64)
+
+
+class ProgressWindowTests(unittest.TestCase):
+    def test_closing_the_window_still_waits_for_installation(self):
+        script = textwrap.dedent(
+            """
+            import sys
+            import threading
+            import time
+
+            import bootstrap
+
+            order = []
+            try:
+                window = bootstrap._ProgressWindow("test")
+            except Exception:
+                sys.exit(3)
+
+            def worker(report):
+                report("Устанавливаю yt-dlp...", 0.5)
+                time.sleep(0.3)
+                order.append("worker")
+
+            def close():
+                order.append("closed")
+                window._root.destroy()
+
+            assert window._root.protocol("WM_DELETE_WINDOW")
+            window._root.after(50, close)
+            errors = window.run(worker)
+            assert errors == [], errors
+            assert order == ["closed", "worker"], order
+            print("OK")
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(Path(__file__).resolve().parents[1]),
+        )
+        if result.returncode == 3:
+            raise unittest.SkipTest("Tk display unavailable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("OK", result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":
