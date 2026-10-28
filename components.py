@@ -94,7 +94,20 @@ def installed_ytdlp_version() -> str:
 
 def ffmpeg_ready() -> bool:
     utils = _utils()
-    return bool(utils.find_ffmpeg() and utils.find_ffprobe())
+    ffmpeg = utils.find_ffmpeg()
+    ffprobe = utils.find_ffprobe()
+    if not (ffmpeg and ffprobe):
+        return False
+    # Свою сборку проверяем запуском: у shared-версии рядом должны лежать DLL,
+    # иначе ffmpeg.exe существует, но падает при склейке. Чужой FFmpeg из PATH
+    # не трогаем — его работоспособность проверяет сам yt-dlp.
+    try:
+        managed = utils.ffmpeg_cache_dir().resolve()
+        if managed in Path(ffmpeg).resolve().parents:
+            return utils.tool_works(ffmpeg) and utils.tool_works(ffprobe)
+    except OSError:
+        return False
+    return True
 
 
 def deno_ready() -> bool:

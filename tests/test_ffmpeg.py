@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import components
 import ffmpeg_tools
 import utils
 
@@ -106,6 +107,56 @@ class InstallTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "ffprobe"):
                 self.install(folder, self.make_archive(include_probe=False))
             self.assertFalse((Path(folder) / "tools").exists())
+
+
+class ReadinessTests(unittest.TestCase):
+    def test_tool_works_checks_exit_code_and_caches_success(self):
+        utils._WORKING_TOOLS.clear()
+        with patch.object(utils.subprocess, "run", return_value=MagicMock(returncode=0)) as run:
+            self.assertTrue(utils.tool_works("ffmpeg-test"))
+            self.assertTrue(utils.tool_works("ffmpeg-test"))
+        self.assertEqual(run.call_count, 1)
+        utils._WORKING_TOOLS.clear()
+        with patch.object(utils.subprocess, "run", side_effect=OSError("missing")):
+            self.assertFalse(utils.tool_works("missing-tool"))
+
+    def test_managed_ffmpeg_is_checked_by_running_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            managed = Path(folder) / "tools" / "ffmpeg"
+            binaries = managed / "bin"
+            binaries.mkdir(parents=True)
+            ffmpeg = binaries / "ffmpeg.exe"
+            ffprobe = binaries / "ffprobe.exe"
+            ffmpeg.write_bytes(b"broken")
+            ffprobe.write_bytes(b"broken")
+            with patch.object(utils, "ffmpeg_cache_dir", return_value=managed), patch.object(
+                utils, "find_ffmpeg", return_value=str(ffmpeg)
+            ), patch.object(utils, "find_ffprobe", return_value=str(ffprobe)), patch.object(
+                utils, "tool_works", return_value=False
+            ) as works:
+                self.assertFalse(components.ffmpeg_ready())
+            self.assertEqual(works.call_count, 1)
+
+            with patch.object(utils, "ffmpeg_cache_dir", return_value=managed), patch.object(
+                utils, "find_ffmpeg", return_value=str(ffmpeg)
+            ), patch.object(utils, "find_ffprobe", return_value=str(ffprobe)), patch.object(
+                utils, "tool_works", return_value=True
+            ):
+                self.assertTrue(components.ffmpeg_ready())
+
+    def test_external_ffmpeg_is_not_launched_at_startup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ffmpeg = Path(folder) / "ffmpeg.exe"
+            ffprobe = Path(folder) / "ffprobe.exe"
+            ffmpeg.write_bytes(b"external")
+            ffprobe.write_bytes(b"external")
+            with patch.object(utils, "ffmpeg_cache_dir", return_value=Path(folder) / "tools"), patch.object(
+                utils, "find_ffmpeg", return_value=str(ffmpeg)
+            ), patch.object(utils, "find_ffprobe", return_value=str(ffprobe)), patch.object(
+                utils, "tool_works"
+            ) as works:
+                self.assertTrue(components.ffmpeg_ready())
+            works.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -174,18 +174,35 @@ def _which(name: str) -> str | None:
         found = shutil.which(name)
         if not found:
             return None
-        result = subprocess.run(
-            [found, "-version"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=3,
-            creationflags=0x08000000 if os.name == "nt" else 0,
-        )
-        if result.returncode == 0:
+        if tool_works(found):
             return found
     except Exception:
         pass
     return None
+
+
+_WORKING_TOOLS: set[str] = set()
+
+
+def tool_works(path: str | Path) -> bool:
+    """Проверяет, что программа запускается (для shared-FFmpeg нужны DLL рядом)."""
+    key = str(path).lower() if os.name == "nt" else str(path)
+    if key in _WORKING_TOOLS:
+        return True
+    try:
+        result = subprocess.run(
+            [str(path), "-version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            creationflags=0x08000000 if os.name == "nt" else 0,
+        )
+    except Exception:
+        return False
+    if result.returncode == 0:
+        _WORKING_TOOLS.add(key)
+        return True
+    return False
 
 
 def _find_tool(tool: str) -> str | None:
