@@ -172,6 +172,13 @@ class UITests(unittest.TestCase):
             self.app._queue_add_paths([path])
         self.assertEqual([it["url"] for it in self.app.queue_items], ["https://example.com/bom"])
 
+    def test_queue_import_accepts_a_utf16_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "links.txt"
+            path.write_text("https://example.com/utf16\n", encoding="utf-16")
+            self.app._queue_add_paths([path])
+        self.assertEqual([it["url"] for it in self.app.queue_items], ["https://example.com/utf16"])
+
     def test_queue_snapshot_skips_finished_items_before_the_limit(self):
         saved = self.app.queue_items
         self.app.queue_items = [

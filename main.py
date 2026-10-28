@@ -1157,7 +1157,13 @@ class YTApp(ttkb.Window):
         added = 0
         for chosen in paths:
             try:
-                lines = Path(chosen).read_text(encoding="utf-8-sig", errors="replace").splitlines()
+                raw = Path(chosen).read_bytes()
+                # Блокнот Windows умеет сохранять «Unicode» (UTF-16) и UTF-8 с BOM.
+                if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+                    text = raw.decode("utf-16", errors="replace")
+                else:
+                    text = raw.decode("utf-8-sig", errors="replace")
+                lines = text.splitlines()
             except Exception as e:
                 LOGGER.exception("Operation failed: _queue_add_paths")
                 messagebox.showerror("Очередь", f"Не удалось прочитать файл:\n{chosen}\n\n{e}")
