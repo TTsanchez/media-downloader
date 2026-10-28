@@ -2092,15 +2092,6 @@ class YTApp(ttkb.Window):
         if start_server(log=lambda m: self._post_ui(lambda msg=m: self._log(msg))):
             self._post_ui(self._check_components)
 
-    def _ensure_pot_server(self) -> bool:
-        if server_running():
-            return True
-        if not provider_installed():
-            return False
-        ok = start_server(log=lambda m: self._log(m))
-        self._check_components()
-        return ok
-
     def _download_ffmpeg_async(self):
         if self._installing_ffmpeg:
             return

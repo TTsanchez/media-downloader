@@ -377,34 +377,6 @@ def _capture_server_output(proc):
         LOGGER.exception("Could not capture PO Token output")
 
 
-def _server_pids() -> list[str]:
-    """PID-ы процессов, слушающих порт провайдера (без учёта языка ОС)."""
-    try:
-        out = subprocess.run(
-            ["netstat", "-ano", "-p", "TCP"],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=20,
-            creationflags=CREATE_NO_WINDOW,
-        ).stdout
-    except Exception:
-        return []
-
-    pids: list[str] = []
-    for line in out.splitlines():
-        parts = line.split()
-        # Proto Local Foreign State PID — состояние локализовано, PID всегда последний
-        if len(parts) < 5 or not parts[0].upper().startswith("TCP"):
-            continue
-        if not parts[1].endswith(f":{SERVER_PORT}"):
-            continue
-        pid = parts[-1]
-        if pid.isdigit() and pid not in pids:
-            pids.append(pid)
-    return pids
-
-
 def stop_server() -> None:
     global _proc
     with _server_lock:
