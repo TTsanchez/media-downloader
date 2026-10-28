@@ -65,7 +65,24 @@ Full list: [yt-dlp supported sites](https://github.com/yt-dlp/yt-dlp/blob/master
 2. Download `Media-Downloader.exe`
 3. Run it — no installation needed
 
-> Windows SmartScreen may warn about an unknown publisher because the binary is not code-signed. Click **More info → Run anyway**.
+> Windows SmartScreen may warn about an unknown publisher because the binary is not code-signed. Click **More info → Run anyway** — but first compare the checksum from the section below.
+
+### Verifying the download
+
+Every release ships `SHA256SUMS.txt` with the SHA-256 of the file built by GitHub Actions from this repository. Compare:
+
+```powershell
+Get-FileHash .\Media-Downloader.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS.txt
+```
+
+The hashes must match. With [GitHub CLI](https://cli.github.com/) you can also verify build provenance:
+
+```powershell
+gh attestation verify .\Media-Downloader.exe --repo TTsanchez/media-downloader
+```
+
+Download the `.exe` only from this repository's [Releases page](../../releases/latest): copies elsewhere may have been modified.
 
 ### Option 2. From source
 
@@ -244,10 +261,15 @@ Build a single `.exe` (output in `dist\Media-Downloader.exe`):
 build_exe.bat
 ```
 
+The script then runs the `--selftest` check: it verifies the version, bundled files, module imports, component folder and Tk, and writes a report to `%LOCALAPPDATA%\Media-Downloader\selftest.txt`.
+
 | File | Purpose |
 |---|---|
 | `main.py` | GUI (tkinter + ttkbootstrap) |
-| `bootstrap.py` | Checks and installs components on startup |
+| `bootstrap.py` | Install order and the first-run window |
+| `components.py` | Installs and checks yt-dlp, FFmpeg, Deno, Node.js, Git, PO Token |
+| `selftest.py` | Network-free self-test of the built `.exe` |
+| `net.py` | Downloads with resume, retries and SHA-256 checks |
 | `downloader.py` | yt-dlp wrapper, formats, retries |
 | `utils.py` | Paths, FFmpeg, browsers, cookies, network checks |
 | `pot.py` | Builds and runs the PO Token server |
