@@ -379,9 +379,11 @@ class YTApp(ttkb.Window):
     def _queue_snapshot(self) -> list[dict]:
         """Возвращает очередь для сохранения в конфиге (без путей и состояния потока)."""
         snapshot = []
-        for item in getattr(self, "queue_items", [])[:MAX_SAVED_QUEUE]:
+        for item in getattr(self, "queue_items", []):
             if item.get("status") == "готово":
                 continue
+            if len(snapshot) >= MAX_SAVED_QUEUE:
+                break
             snapshot.append({
                 "url": item.get("url", ""),
                 "title": item.get("title", ""),
@@ -405,6 +407,8 @@ class YTApp(ttkb.Window):
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
+            if restored >= MAX_SAVED_QUEUE:
+                break
             url = str(entry.get("url") or "").strip()
             if not looks_like_url(url) or any(it["url"] == url for it in self.queue_items):
                 continue
@@ -478,6 +482,7 @@ class YTApp(ttkb.Window):
         self._q_active: dict[int, MediaDownloader] = {}
         self._q_done_count = 0
         self._q_error_count = 0
+        self._q_cancel_count = 0
 
     # ---------- ui ----------
 
@@ -1152,7 +1157,7 @@ class YTApp(ttkb.Window):
         added = 0
         for chosen in paths:
             try:
-                lines = Path(chosen).read_text(encoding="utf-8", errors="replace").splitlines()
+                lines = Path(chosen).read_text(encoding="utf-8-sig", errors="replace").splitlines()
             except Exception as e:
                 LOGGER.exception("Operation failed: _queue_add_paths")
                 messagebox.showerror("Очередь", f"Не удалось прочитать файл:\n{chosen}\n\n{e}")
@@ -1294,8 +1299,17 @@ class YTApp(ttkb.Window):
     def _queue_start(self):
         if self._q_running or self._updating:
             return
+        if self._installing_components or self._installing_ffmpeg:
+            messagebox.showinfo("Очередь", "Дождитесь окончания установки компонентов.")
+            return
         if self.is_downloading or self._info_loading:
             messagebox.showinfo("Очередь", "Сначала дождитесь завершения текущей загрузки.")
+            return
+        if self._paused_download:
+            messagebox.showinfo(
+                "Очередь",
+                "Есть приостановленная загрузка. Продолжите её или нажмите «Отмена», затем запускайте очередь.",
+            )
             return
         try:
             n = self.q_parallel_var.get()
@@ -1316,6 +1330,7 @@ class YTApp(ttkb.Window):
         self._q_running = True
         self._q_done_count = 0
         self._q_error_count = 0
+        self._q_cancel_count = 0
         for it in pending:
             it["options"] = dict(
                 output_dir=Path(self.output_dir_var.get() or str(get_default_download_dir())),
@@ -1349,6 +1364,8 @@ class YTApp(ttkb.Window):
             self._queue_download_item(item)
 
     def _queue_download_item(self, item: dict):
+        if item["status"] in ("отмена", "пауза"):
+            return
         item["status"] = "инфо"
         self._queue_post(item)
         out_dir = item["options"]["output_dir"]
@@ -1382,25 +1399,33 @@ class YTApp(ttkb.Window):
             if prog.status == "done":
                 item["status"] = "готово"
                 item["percent"] = 100.0
-                self._q_done_count += 1
+                with self._q_lock:
+                    self._q_done_count += 1
             elif prog.status == "cancelled":
-                item["status"] = "пауза" if self._q_paused else "отмена"
+                if self._q_paused:
+                    item["status"] = "пауза"
+                else:
+                    item["status"] = "отмена"
+                    with self._q_lock:
+                        self._q_cancel_count += 1
             else:
                 item["status"] = "ошибка"
                 item["error"] = prog.error or "ошибка"
-                self._q_error_count += 1
+                with self._q_lock:
+                    self._q_error_count += 1
         except Exception as e:
             LOGGER.exception("Operation failed: _queue_download_item")
             item["status"] = "ошибка"
             item["error"] = str(e)
-            self._q_error_count += 1
+            with self._q_lock:
+                self._q_error_count += 1
         finally:
             with self._q_lock:
                 self._q_active.pop(id(item), None)
             self._queue_post(item)
 
     def _queue_on_progress(self, item: dict, p: DownloadProgress):
-        if item["status"] in ("готово", "ошибка", "отмена"):
+        if item["status"] in ("готово", "ошибка", "отмена", "пауза"):
             return
         item["percent"] = p.percent
         if p.filename:
@@ -1427,9 +1452,9 @@ class YTApp(ttkb.Window):
             self.btn_q_stop.configure(state="disabled")
         except Exception:
             LOGGER.debug("Optional operation failed: _queue_finish", exc_info=True)
-        done = sum(1 for it in self.queue_items if it["status"] == "готово")
-        err = sum(1 for it in self.queue_items if it["status"] == "ошибка")
-        cancelled = sum(1 for it in self.queue_items if it["status"] == "отмена")
+        done = self._q_done_count
+        err = self._q_error_count
+        cancelled = self._q_cancel_count
         waiting = sum(1 for it in self.queue_items if it["status"] == "пауза")
         for item in self.queue_items:
             if item["status"] == "ошибка":
@@ -1483,6 +1508,7 @@ class YTApp(ttkb.Window):
             for it in self.queue_items:
                 if it["status"] in ("ожидание", "старт"):
                     it["status"] = "отмена"
+                    self._q_cancel_count += 1
                     self._post_ui(lambda i=it: self._queue_update_row(i))
         for dl in actives:
             try:
@@ -2241,15 +2267,18 @@ class YTApp(ttkb.Window):
     # ---------- download ----------
 
     def _download_async(self):
+        if self._installing_components or self._installing_ffmpeg:
+            messagebox.showinfo("Загрузка", "Дождитесь окончания установки компонентов.")
+            return
+        if self._q_running:
+            messagebox.showinfo("Загрузка", "Сначала дождитесь завершения очереди или остановите её.")
+            return
         if self._paused_download and not self.is_downloading:
             if self._info_loading or self._updating:
                 return
             if self._resume_download():
                 return
         if self.is_downloading or self._updating or self._info_loading:
-            return
-        if self._q_running:
-            messagebox.showinfo("Загрузка", "Сначала дождитесь завершения очереди или остановите её.")
             return
         url = self.url_var.get().strip()
         if not looks_like_url(url):
@@ -2484,13 +2513,24 @@ class YTApp(ttkb.Window):
         if busy:
             if not messagebox.askyesno("Выход", "Идёт загрузка. Остановить и выйти?"):
                 return
-            self.downloader.stop()
-            self._queue_stop()
+            if self.is_downloading:
+                try:
+                    self.downloader.stop()
+                except Exception:
+                    LOGGER.debug("Optional operation failed: _on_close stop download", exc_info=True)
+            if self._q_running:
+                try:
+                    self._queue_stop()
+                except Exception:
+                    LOGGER.debug("Optional operation failed: _on_close stop queue", exc_info=True)
         self._save_config()
         LOGGER.info("Window close requested")
         self._closing = True
         if self._info_downloader is not None:
-            self._info_downloader.stop()
+            try:
+                self._info_downloader.stop()
+            except Exception:
+                LOGGER.debug("Optional operation failed: _on_close stop info", exc_info=True)
         threading.Thread(target=stop_server).start()
         self.destroy()
 

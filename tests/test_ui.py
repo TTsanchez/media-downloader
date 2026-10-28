@@ -46,6 +46,10 @@ class UITests(unittest.TestCase):
 
     def setUp(self):
         self.app._q_running = False
+        self.app._q_done_count = 0
+        self.app._q_error_count = 0
+        self.app._q_cancel_count = 0
+        self.app._q_paused = False
         self.app.playlist_all_var.set(True)
         self.app.url_var.set("")
         self.app._queue_clear()
@@ -160,6 +164,118 @@ class UITests(unittest.TestCase):
             self.app._queue_add_paths([path])
         self.assertEqual([it["url"] for it in self.app.queue_items],
                          ["https://example.com/one", "https://example.com/two"])
+
+    def test_queue_import_accepts_a_file_with_utf8_bom(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "links.txt"
+            path.write_text("https://example.com/bom\n", encoding="utf-8-sig")
+            self.app._queue_add_paths([path])
+        self.assertEqual([it["url"] for it in self.app.queue_items], ["https://example.com/bom"])
+
+    def test_queue_snapshot_skips_finished_items_before_the_limit(self):
+        saved = self.app.queue_items
+        self.app.queue_items = [
+            {"url": f"https://example.com/done{i}", "status": "готово"}
+            for i in range(main.MAX_SAVED_QUEUE + 5)
+        ]
+        self.app.queue_items.extend(
+            {"url": f"https://example.com/pending{i}", "status": "ожидание"} for i in range(3)
+        )
+        try:
+            snapshot = self.app._queue_snapshot()
+        finally:
+            self.app.queue_items = saved
+        self.assertEqual(
+            [entry["url"] for entry in snapshot],
+            [f"https://example.com/pending{i}" for i in range(3)],
+        )
+
+    def test_queue_restore_limits_entries(self):
+        entries = [{"url": f"https://example.com/{i}"} for i in range(5)]
+        try:
+            with patch.object(main, "MAX_SAVED_QUEUE", 2):
+                self.app.config[main.QUEUE_CONFIG_KEY] = entries
+                self.app._restore_queue()
+        finally:
+            self.app.config[main.QUEUE_CONFIG_KEY] = []
+        self.assertEqual(len(self.app.queue_items), 2)
+
+    def test_queue_completion_counts_only_the_current_run(self):
+        class FakeDownloader:
+            def __init__(self, *args, **kwargs):
+                self.progress = DownloadProgress()
+
+            def download(self, **kwargs):
+                self.progress.status = "done"
+
+            def stop(self):
+                pass
+
+        self.app._queue_append("https://example.com/new")
+        self.app._queue_append("https://example.com/old")
+        new_item, old_item = self.app.queue_items
+        old_item["status"] = "готово"
+        self.app._q_done_count = 0
+        with tempfile.TemporaryDirectory() as folder:
+            new_item["options"] = {"output_dir": Path(folder)}
+            with patch.object(main, "MediaDownloader", FakeDownloader):
+                self.app._queue_download_item(new_item)
+        self.app._drain_ui_events()
+        self.assertEqual(new_item["status"], "готово")
+        self.app._q_running = True
+        try:
+            with patch.object(self.app, "_show_completion") as shown:
+                self.app._queue_finish()
+        finally:
+            self.app._q_running = False
+        shown.assert_called_once()
+        self.assertIn("Скачано файлов: 1.", shown.call_args[0][1])
+
+    def test_paused_item_ignores_late_progress(self):
+        self.app._queue_append("https://example.com/paused")
+        item = self.app.queue_items[0]
+        item.update(status="пауза", percent=40)
+        progress = DownloadProgress()
+        progress.status = "downloading"
+        progress.percent = 55
+        self.app._queue_on_progress(item, progress)
+        self.assertEqual((item["status"], item["percent"]), ("пауза", 40))
+
+    def test_download_waits_for_component_installation(self):
+        self.app.url_var.set("https://example.com/video")
+        self.app._installing_components = True
+        try:
+            with patch.object(main.messagebox, "showinfo") as info:
+                self.app._download_async()
+        finally:
+            self.app._installing_components = False
+        info.assert_called_once()
+        self.assertFalse(self.app.is_downloading)
+
+    def test_queue_does_not_start_while_a_download_is_paused(self):
+        self.app._paused_download = True
+        try:
+            with patch.object(main.messagebox, "showinfo") as info:
+                self.app._queue_start()
+        finally:
+            self.app._paused_download = False
+        info.assert_called_once()
+        self.assertFalse(self.app._q_running)
+
+    def test_single_download_does_not_resume_during_queue(self):
+        self.app.url_var.set("https://example.com/video")
+        self.app._paused_download = True
+        self.app._last_download_args = {"url": "https://example.com/video"}
+        self.app._q_running = True
+        try:
+            with patch.object(main.messagebox, "showinfo") as info:
+                self.app._download_async()
+        finally:
+            self.app._q_running = False
+            self.app._paused_download = False
+            self.app._last_download_args = None
+        info.assert_called_once()
+        self.assertFalse(self.app.is_downloading)
 
     def test_queue_pause_marks_unfinished_items(self):
         self.assertTrue(self.app._queue_append("https://example.com/pause"))
