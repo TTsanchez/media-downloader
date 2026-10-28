@@ -19,7 +19,8 @@ import components
 import utils
 
 REPORT_NAME = "selftest.txt"
-APP_MODULES = ("utils", "net", "diagnostics", "pot", "ffmpeg_tools", "components", "bootstrap")
+APP_MODULES = ("utils", "net", "diagnostics", "pot", "ffmpeg_tools", "components", "bootstrap",
+               "history", "thumbnails", "notifications")
 OK = "OK"
 ERROR = "ОШИБКА"
 INFO = "ИНФО"
@@ -52,6 +53,21 @@ def _check_modules() -> str:
 def _check_ui_library() -> str:
     ttkbootstrap = importlib.import_module("ttkbootstrap")
     return f"ttkbootstrap {getattr(ttkbootstrap, '__version__', '')}".strip()
+
+
+def _check_images() -> str:
+    PIL = importlib.import_module("PIL")
+    from PIL import Image, ImageTk  # noqa: F401 - проверяем, что вошли в сборку
+
+    image = Image.new("RGB", (8, 8), "#4d8dff")
+    root = tk.Tk()
+    try:
+        root.withdraw()
+        photo = ImageTk.PhotoImage(image)
+        del photo
+    finally:
+        root.destroy()
+    return f"Pillow {getattr(PIL, '__version__', '')}".strip()
 
 
 def _check_components_dir() -> str:
@@ -89,6 +105,7 @@ def _run_checks() -> list[tuple[str, str, str]]:
         ("Файлы сборки", _check_bundle_files),
         ("Модули приложения", _check_modules),
         ("Библиотека интерфейса", _check_ui_library),
+        ("Библиотека изображений", _check_images),
         ("Папка компонентов", _check_components_dir),
         ("Tkinter", _check_tk),
     ]

@@ -22,14 +22,17 @@ class UITests(unittest.TestCase):
         except tk.TclError as error:
             raise unittest.SkipTest(f"Tk display unavailable: {error}")
         cls.temp = tempfile.TemporaryDirectory()
+        cls.history_file = Path(cls.temp.name) / "history.json"
         cls.patches = [
             patch.object(main, "CONFIG_FILE", Path(cls.temp.name) / "config.json"),
             patch.object(main, "LEGACY_CONFIG_FILE", Path(cls.temp.name) / "legacy.json"),
+            patch.object(main, "HISTORY_FILE", cls.history_file),
             patch.object(main, "detect_browsers", return_value=[]),
             patch.object(main.YTApp, "_check_updates_async"),
             patch.object(main.YTApp, "_autostart_pot"),
             patch.object(main.YTApp, "_check_components"),
             patch.object(main.YTApp, "_check_ffmpeg"),
+            patch.object(main.thumbnails, "prune", return_value=0),
         ]
         for context in cls.patches:
             context.start()
@@ -52,6 +55,8 @@ class UITests(unittest.TestCase):
         self.app._q_paused = False
         self.app.playlist_all_var.set(True)
         self.app.url_var.set("")
+        self.app.history.clear()
+        self.app._history_dirty = True
         self.app._queue_clear()
 
     def test_all_playlist_ignores_old_range(self):
@@ -359,6 +364,82 @@ class UITests(unittest.TestCase):
                     show.assert_called_once()
             finally:
                 service.close()
+
+
+    def test_queue_rows_keep_preview_column_and_statuses(self):
+        self.assertTrue(self.app._queue_append("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        self.assertTrue(self.app._queue_append("https://example.com/second"))
+        first, second = self.app.queue_items
+        self.assertIn("dQw4w9WgXcQ", first["thumb_url"])
+        self.assertEqual(self.app.queue_tree.set(first["iid"], "title"),
+                         "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        self.assertEqual(self.app.queue_tree.set(first["iid"], "status"), "ожидание")
+        self.assertIn("odd", self.app.queue_tree.item(second["iid"], "tags"))
+        self.assertNotIn("odd", self.app.queue_tree.item(first["iid"], "tags"))
+
+    def test_finished_queue_item_is_written_to_history(self):
+        class FakeDownloader:
+            def __init__(self, *args, **kwargs):
+                self.progress = DownloadProgress()
+
+            def download(self, **kwargs):
+                self.progress.status = "done"
+                self.progress.total = 1024
+
+            def stop(self):
+                pass
+
+        self.app._queue_append("https://example.com/history")
+        item = self.app.queue_items[0]
+        with tempfile.TemporaryDirectory() as folder:
+            item["options"] = {"output_dir": Path(folder)}
+            with patch.object(main, "MediaDownloader", FakeDownloader):
+                self.app._queue_download_item(item)
+        entries = self.app.history.entries()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["url"], "https://example.com/history")
+        self.assertEqual(entries[0]["size"], 1024)
+        self.assertEqual(entries[0]["source"], "queue")
+
+    def test_history_tab_renders_cards_and_count(self):
+        self.app.history.add({
+            "url": "https://example.com/a",
+            "title": "Первое видео",
+            "folder": str(Path(tempfile.gettempdir())),
+            "file": "a.mp4",
+        })
+        self.app.history.add({
+            "url": "https://example.com/b",
+            "title": "Второе видео",
+            "folder": str(Path(tempfile.gettempdir())),
+            "file": "b.mp4",
+        })
+        self.app._render_history()
+        self.assertEqual(self.app.history_count_lbl.cget("text"), "Всего: 2")
+        self.assertGreaterEqual(len(self.app.history_list.winfo_children()), 2)
+
+    def test_desktop_notification_only_when_window_is_inactive(self):
+        with patch.object(self.app, "_window_is_active", return_value=True), patch.object(
+            self.app._notifier, "show"
+        ) as show:
+            self.app._notify_desktop("Готово", "Файл сохранён")
+            show.assert_not_called()
+        with patch.object(self.app, "_window_is_active", return_value=False), patch.object(
+            self.app._notifier, "show", return_value=True
+        ) as show:
+            self.app.notify_var.set(True)
+            self.app._notify_desktop("Готово", "Файл сохранён")
+            show.assert_called_once_with("Готово", "Файл сохранён")
+
+    def test_preview_uses_youtube_thumbnail_guess(self):
+        with patch.object(self.app, "_fetch_thumb") as fetch:
+            self.app._show_preview("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        self.assertEqual(self.app._preview_key, "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg")
+        fetch.assert_called_once()
+
+    def test_placeholder_image_is_created(self):
+        photo = self.app._placeholder_photo(main.QUEUE_THUMB, radius=8)
+        self.assertIsNotNone(photo)
 
 
 if __name__ == "__main__":

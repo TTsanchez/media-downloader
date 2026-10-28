@@ -21,6 +21,15 @@ for package in ('ttkbootstrap',):
     binaries += collected[1]
     hiddenimports += collected[2]
 
+# Pillow нужен для обложек: JPEG/WebP нельзя показать в Tk напрямую.
+hiddenimports += [
+    'PIL.Image',
+    'PIL.ImageDraw',
+    'PIL.ImageOps',
+    'PIL.ImageTk',
+    'PIL._tkinter_finder',
+]
+
 a = Analysis(
     ['main.py'],
     pathex=[],

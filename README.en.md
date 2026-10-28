@@ -29,7 +29,11 @@ Media Downloader is a simple desktop app for Windows. It runs entirely locally: 
 - 📼 **Video only** — no sound track
 - 📚 **Playlists** — full or by index range
 - 🎯 **Format table** — pick the exact resolution, codec, FPS and size
-- 📋 **Download queue** — many links at once, 1–4 threads
+- 📋 **Download queue** — many links at once, 1–4 threads, with thumbnails
+- 🖼 **Preview** — cover art, channel and duration before downloading
+- 🕘 **Download history** — recent files with previews and one-click repeat
+- 🔔 **Windows notifications** — a message when a file is ready and the window is in the background
+- 🎨 **Dark theme** — tidy cards, a single accent colour and clear states
 - ⚡ **Shorts** and regular videos
 - 📊 **Progress** — percent, speed, ETA, file size
 - ⏸ **Pause and resume** — continues from where it stopped
@@ -111,10 +115,10 @@ python main.py
 ## 🚀 Usage
 
 1. **Paste a link** to a video, audio track or playlist.
-2. Click **Get info** — title, channel and duration appear.
+2. Click **Get info** — title, cover art, channel and duration appear.
 3. On the **Format** tab choose what to download: best quality, video only, or audio only. A **format table** lets you pick an exact resolution, codec and size; a **quality preset** (1080p, 720p, etc.) simply caps the resolution.
 4. Click **Download**. Progress and log appear at the bottom; **Pause** stops the download so it can resume from the same point.
-5. The file is saved to your download folder (**Open folder** button). A completion window offers **Open folder**.
+5. The file is saved to your download folder (**Open folder** button). A completion window offers **Open folder**; if the app is in the background, Windows shows a notification instead.
 
 <div align="center">
 <img src="docs/screenshots/03-settings.png" width="49%" alt="Settings">
@@ -123,6 +127,8 @@ python main.py
 
 ### 📋 Download queue
 
+![Download queue](docs/screenshots/05-queue.png)
+
 The **Queue** tab downloads many links at once:
 
 1. Paste links (one per line) or use **From file...** / **Paste**. You can also drop a `.txt` with links onto the app icon — the queue picks it up on launch.
@@ -130,6 +136,18 @@ The **Queue** tab downloads many links at once:
 3. Click **Download all** — each link shows status and percent. **Pause** stops the queue so you can continue later; **Stop** cancels it.
 
 The queue persists between launches: unfinished links come back the next time you open the app.
+
+### 🕘 Download history
+
+![Download history](docs/screenshots/04-history.png)
+
+The **History** tab lists recent downloads with a cover, title, channel, duration, format and size. Each entry has **Repeat**, **Folder** and **Delete** buttons; the whole history can be cleared at once, while the files themselves stay on disk.
+
+The history is stored locally in `%LOCALAPPDATA%\Media-Downloader\history.json` and keeps up to 300 entries.
+
+### 🔔 Notifications
+
+When a download finishes while the app window is inactive, Windows shows a notification with the file name. Turn it off in **Settings → Notifications and previews**.
 
 ### ⌨️ Hotkeys
 
