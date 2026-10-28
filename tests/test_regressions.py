@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import downloader
+import net
 import pot
 import utils
 
@@ -93,13 +94,20 @@ class UpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             dest = Path(folder) / "update.exe"
             dest.write_bytes(b"previous")
-            response = MagicMock()
-            response.__enter__.return_value = response
-            response.iter_content.side_effect = OSError("connection lost")
-            with patch.object(utils.requests, "get", return_value=response):
+            with patch.object(net, "download", side_effect=OSError("connection lost")):
                 self.assertFalse(utils.download_file("https://example.com/update", dest))
             self.assertEqual(dest.read_bytes(), b"previous")
             self.assertFalse(dest.with_suffix(".exe.part").exists())
+
+    def test_update_asset_exposes_digest(self):
+        release = {"assets": [{
+            "name": "Media-Downloader.exe",
+            "browser_download_url": "https://example.com/app.exe",
+            "digest": "sha256:abc123",
+        }]}
+        asset = utils.get_app_asset(release)
+        self.assertEqual(asset["digest"], "sha256:abc123")
+        self.assertEqual(utils.get_app_asset_url(release), "https://example.com/app.exe")
 
     def test_updater_preserves_cyrillic_paths(self):
         with tempfile.TemporaryDirectory() as folder:

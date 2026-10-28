@@ -68,7 +68,7 @@ from utils import (
     format_bytes,
     format_duration,
     format_eta,
-    get_app_asset_url,
+    get_app_asset,
     get_app_version,
     get_default_download_dir,
     get_latest_app_release,
@@ -1405,27 +1405,29 @@ class YTApp(ttkb.Window):
             tag = rel.get("tag_name") or ""
             if not is_newer_app_version(tag, cur):
                 return
-            url = get_app_asset_url(rel)
-            if not url:
+            asset = get_app_asset(rel)
+            if not asset or not asset.get("browser_download_url"):
                 return
-            self._post_ui(lambda t=tag,u=url: self._prompt_app_update(t, u))
+            url = asset["browser_download_url"]
+            digest = asset.get("digest") or ""
+            self._post_ui(lambda t=tag, u=url, d=digest: self._prompt_app_update(t, u, d))
         except Exception:
             LOGGER.debug("Optional operation failed: _check_app_update_async", exc_info=True)
 
-    def _prompt_app_update(self, tag: str, url: str):
+    def _prompt_app_update(self, tag: str, url: str, digest: str = ""):
         if self._closing or self._updating:
             return
         if self.is_downloading or self._q_running or self._info_loading:
-            self.after(60000, lambda t=tag,u=url: self._prompt_app_update(t, u))
+            self.after(60000, lambda t=tag, u=url, d=digest: self._prompt_app_update(t, u, d))
             return
         if not messagebox.askyesno(
             "Обновление программы",
             "Доступна новая версия Media Downloader " + tag + ".\n\nСкачать и обновить сейчас?\nПрограмма закроется и обновится автоматически.",
         ):
             return
-        self._do_app_update(url)
+        self._do_app_update(url, digest)
 
-    def _do_app_update(self, url: str):
+    def _do_app_update(self, url: str, digest: str = ""):
         if self._updating:
             return
         if not getattr(sys, "frozen", False):
@@ -1436,15 +1438,15 @@ class YTApp(ttkb.Window):
         self.btn_q_start.configure(state="disabled")
         self.btn_info.configure(state="disabled")
         self.status_var.set("Скачиваю обновление программы…")
-        threading.Thread(target=self._app_update_worker, args=(url,), daemon=True).start()
+        threading.Thread(target=self._app_update_worker, args=(url, digest), daemon=True).start()
 
-    def _app_update_worker(self, url: str):
+    def _app_update_worker(self, url: str, digest: str = ""):
         try:
             exe = Path(sys.executable)
             new_exe = exe.with_name("Media-Downloader.new.exe")
             self._log("Скачиваю обновление...")
-            if not download_file(url, new_exe):
-                raise RuntimeError("Не удалось скачать обновление")
+            if not download_file(url, new_exe, expected_sha256=digest):
+                raise RuntimeError("Не удалось скачать обновление или не совпала контрольная сумма")
             bat = create_updater_script(new_exe, exe)
             if not bat:
                 raise RuntimeError("Не удалось создать скрипт обновления")

@@ -24,15 +24,34 @@ class BundledToolTests(unittest.TestCase):
                 self.assertEqual(utils.find_ffmpeg(), str((binaries / "ffmpeg.exe").resolve()))
                 self.assertEqual(utils.find_ffprobe(), str((binaries / "ffprobe.exe").resolve()))
 
-    def test_static_windows_x64_archive_is_selected(self):
+    def test_smaller_shared_windows_archive_is_preferred(self):
         response = MagicMock()
         response.json.return_value = {"assets": [
-            {"name": "ffmpeg-master-latest-win64-gpl-shared.zip"},
             {"name": "ffmpeg-master-latest-winarm64-gpl.zip"},
-            {"name": "ffmpeg-master-latest-win64-gpl.zip", "browser_download_url": "https://example.com/ffmpeg.zip"},
+            {
+                "name": "ffmpeg-master-latest-win64-gpl.zip",
+                "browser_download_url": "https://example.com/full.zip",
+            },
+            {
+                "name": "ffmpeg-master-latest-win64-gpl-shared.zip",
+                "browser_download_url": "https://example.com/shared.zip",
+            },
         ]}
         with patch.object(utils.requests, "get", return_value=response):
-            self.assertEqual(utils.get_ffmpeg_download()["name"], "ffmpeg-master-latest-win64-gpl.zip")
+            chosen = utils.get_ffmpeg_download()
+        self.assertEqual(chosen["name"], "ffmpeg-master-latest-win64-gpl-shared.zip")
+        self.assertEqual(chosen["url"], "https://example.com/shared.zip")
+
+    def test_full_archive_is_fallback(self):
+        response = MagicMock()
+        response.json.return_value = {"assets": [
+            {
+                "name": "ffmpeg-master-latest-win64-gpl.zip",
+                "browser_download_url": "https://example.com/full.zip",
+            },
+        ]}
+        with patch.object(utils.requests, "get", return_value=response):
+            self.assertEqual(utils.get_ffmpeg_download()["url"], "https://example.com/full.zip")
 
 
 class InstallTests(unittest.TestCase):
@@ -42,27 +61,36 @@ class InstallTests(unittest.TestCase):
             archive.writestr("package/bin/ffmpeg.exe", b"ffmpeg")
             if include_probe:
                 archive.writestr("package/bin/ffprobe.exe", b"ffprobe")
+            archive.writestr("package/bin/avcodec-62.dll", b"library")
             archive.writestr("package/LICENSE.txt", "GPL license text")
             archive.writestr("../../unrelated.txt", "must not be extracted")
         return stream.getvalue()
 
     def install(self, folder, data, digest=None):
-        response = MagicMock()
-        response.__enter__.return_value = response
-        response.headers = {}
-        response.iter_content.return_value = [data]
+        actual = "sha256:" + hashlib.sha256(data).hexdigest()
         info = {"name": "ffmpeg.zip", "url": "https://example.com/ffmpeg.zip", "size": len(data),
-                "digest": digest or "sha256:" + hashlib.sha256(data).hexdigest()}
+                "digest": digest or actual}
+
+        def fake_download(_url, destination, log=None, progress=None, timeout=None,
+                          expected_sha256=None):
+            if expected_sha256 and expected_sha256 != actual:
+                raise RuntimeError("Контрольная сумма не совпала")
+            destination.write_bytes(data)
+            if progress:
+                progress(1.0)
+            return destination
+
         with patch.object(ffmpeg_tools, "get_ffmpeg_download", return_value=info), patch.object(
-            ffmpeg_tools.requests, "get", return_value=response
+            ffmpeg_tools.net, "download", side_effect=fake_download
         ):
             return ffmpeg_tools.install_ffmpeg(Path(folder) / "tools")
 
-    def test_installs_both_tools_and_license_without_extracting_other_files(self):
+    def test_installs_tools_libraries_and_license_without_other_files(self):
         with tempfile.TemporaryDirectory() as folder:
             binaries = self.install(folder, self.make_archive())
             self.assertEqual((binaries / "ffmpeg.exe").read_bytes(), b"ffmpeg")
             self.assertEqual((binaries / "ffprobe.exe").read_bytes(), b"ffprobe")
+            self.assertEqual((binaries / "avcodec-62.dll").read_bytes(), b"library")
             self.assertTrue((binaries.parent / "licenses" / "LICENSE.txt").is_file())
             self.assertTrue((binaries.parent / "licenses" / "SOURCE.txt").is_file())
             self.assertFalse((Path(folder) / "unrelated.txt").exists())

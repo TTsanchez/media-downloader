@@ -209,18 +209,47 @@ def get_ffmpeg_download() -> dict | None:
         r = requests.get(url, timeout=10, headers={"User-Agent": "Media-Downloader"})
         r.raise_for_status()
         data = r.json()
-        for a in data.get("assets", []):
-            name = a.get("name", "").lower()
-            if name == "ffmpeg-master-latest-win64-gpl.zip":
+        # shared-сборка весит вдвое меньше статической (~88 МБ против ~192 МБ).
+        # Рядом с ffmpeg.exe распаковываются её DLL, поэтому она работает так же.
+        preferred = (
+            "ffmpeg-master-latest-win64-gpl-shared.zip",
+            "ffmpeg-master-latest-win64-gpl.zip",
+        )
+        assets = {a.get("name"): a for a in data.get("assets", [])}
+        for name in preferred:
+            if name in assets:
+                a = assets[name]
+                digest = a.get("digest")
+                if not digest:
+                    digest = _ffmpeg_checksum(data, name)
                 return {
                     "name": a["name"],
                     "url": a["browser_download_url"],
                     "size": a.get("size", 0),
-                    "digest": a.get("digest"),
+                    "digest": digest,
                     "release_url": data.get("html_url", ""),
                 }
     except Exception:
         LOGGER.warning("Could not fetch FFmpeg release metadata", exc_info=True)
+    return None
+
+
+def _ffmpeg_checksum(release: dict, filename: str) -> str | None:
+    """Запасной путь: берёт SHA-256 из checksums.sha256, если API не отдал digest."""
+    checksums = next((a for a in release.get("assets", [])
+                      if a.get("name") == "checksums.sha256"), None)
+    if not checksums or not checksums.get("browser_download_url"):
+        return None
+    try:
+        response = requests.get(checksums["browser_download_url"], timeout=10,
+                                headers={"User-Agent": "Media-Downloader"})
+        response.raise_for_status()
+        for line in response.text.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[-1].lstrip("*") == filename:
+                return "sha256:" + parts[0].lower()
+    except Exception:
+        LOGGER.warning("Could not read FFmpeg checksums", exc_info=True)
     return None
 
 
@@ -496,14 +525,19 @@ def get_latest_app_release(timeout: int = 15) -> Optional[dict]:
         return None
 
 
-def get_app_asset_url(release: dict, asset_name: str = APP_EXE_NAME) -> Optional[str]:
+def get_app_asset(release: dict, asset_name: str = APP_EXE_NAME) -> Optional[dict]:
     try:
         for asset in release.get("assets", []) or []:
             if asset.get("name") == asset_name:
-                return asset.get("browser_download_url")
+                return asset
     except Exception:
         pass
     return None
+
+
+def get_app_asset_url(release: dict, asset_name: str = APP_EXE_NAME) -> Optional[str]:
+    asset = get_app_asset(release, asset_name)
+    return asset.get("browser_download_url") if asset else None
 
 
 def is_newer_app_version(remote_tag: str, local_ver: str) -> bool:
@@ -529,28 +563,19 @@ def is_newer_app_version(remote_tag: str, local_ver: str) -> bool:
         return rv > lv
 
 
-def download_file(url: str, dest: Path, timeout: int = 600) -> bool:
-    partial = dest.with_suffix(dest.suffix + ".part")
+def download_file(url: str, dest: Path, timeout: int = 600,
+                  expected_sha256: str | None = None) -> bool:
+    """Скачивает файл с докачкой; при ошибке существующий файл не трогает."""
+    import net
+
     try:
         LOGGER.info("File download started: url=%s destination=%s", url, dest)
-        import requests
-
-        headers = {"User-Agent": "Media-Downloader"}
-        with requests.get(url, headers=headers, stream=True, timeout=timeout) as r:
-            r.raise_for_status()
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            with open(partial, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-        partial.replace(dest)
+        net.download(url, dest, timeout=(20, timeout), expected_sha256=expected_sha256)
         LOGGER.info("File download completed: destination=%s", dest)
         return True
     except Exception:
         LOGGER.exception("File download failed: url=%s destination=%s", url, dest)
         return False
-    finally:
-        partial.unlink(missing_ok=True)
 
 
 def create_updater_script(new_exe: Path, current_exe: Path) -> Optional[Path]:

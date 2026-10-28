@@ -28,9 +28,9 @@ import time
 import zipfile
 from pathlib import Path
 
-LOGGER = logging.getLogger("media_downloader.bootstrap")
+import net
 
-_USER_AGENT = {"User-Agent": "Media-Downloader", "Accept": "application/vnd.github+json"}
+LOGGER = logging.getLogger("media_downloader.bootstrap")
 
 PYPI_PACKAGES = ("yt-dlp", "yt-dlp-ejs", "bgutil-ytdlp-pot-provider")
 STAGE_WEIGHTS = {
@@ -164,77 +164,32 @@ def component_status() -> dict:
 
 def _session():
     """HTTP-сеанс с повторами: первый запуск не должен падать из-за одного сбоя TLS."""
-    import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
-
-    session = requests.Session()
-    retry = Retry(
-        total=4,
-        connect=4,
-        read=4,
-        status=4,
-        backoff_factor=0.8,
-        status_forcelist=(408, 429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"GET", "HEAD"}),
-        raise_on_status=False,
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    session.headers.update(_USER_AGENT)
-    return session
+    return net.session()
 
 
 def _get_json(url: str, timeout: float = 20):
-    with _session() as session:
-        response = session.get(url, timeout=timeout)
-        response.raise_for_status()
-        return response.json()
+    return net.get_json(url, timeout=timeout)
 
 
-def _download(url: str, destination: Path, log=None, progress=None, timeout=(20, 120)) -> Path:
+def _download(url: str, destination: Path, log=None, progress=None,
+              timeout=(20, 120), expected_sha256: str | None = None) -> Path:
     emit = _emit(log)
-    report = _report(progress)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    partial = destination.with_suffix(destination.suffix + ".part")
-    LOGGER.info("Download started: url=%s destination=%s", url, destination)
     emit(f"Скачиваю {destination.name}...")
-
-    last_error: Exception | None = None
-    for attempt in range(1, 4):
-        try:
-            with _session() as session, session.get(url, stream=True, timeout=timeout) as response:
-                response.raise_for_status()
-                total = int(response.headers.get("content-length") or 0)
-                received = 0
-                with partial.open("wb") as output:
-                    for chunk in response.iter_content(1 << 20):
-                        if not chunk:
-                            continue
-                        output.write(chunk)
-                        received += len(chunk)
-                        if total:
-                            report(min(received / total, 1.0))
-            partial.replace(destination)
-            emit(f"Загружено: {destination.name}")
-            return destination
-        except Exception as error:
-            last_error = error
-            LOGGER.warning("Download attempt %s failed: %s", attempt, url, exc_info=True)
-            partial.unlink(missing_ok=True)
-            if attempt < 3:
-                emit("Сбой сети, повторяю загрузку...")
-                time.sleep(2 * attempt)
-    raise RuntimeError(f"Не удалось скачать {destination.name}: {last_error}")
+    return net.download(
+        url,
+        destination,
+        log=emit,
+        progress=_report(progress),
+        timeout=timeout,
+        expected_sha256=expected_sha256,
+    )
 
 
 def _extract_zip(archive: Path, destination: Path) -> None:
     """Распаковывает zip и убирает единственную верхнюю папку, если она есть."""
     with tempfile.TemporaryDirectory(prefix="media-downloader-unpack-") as folder:
         root = Path(folder)
-        with zipfile.ZipFile(archive) as package:
-            package.extractall(root)
+        net.safe_extract_zip(archive, root)
         entries = list(root.iterdir())
         source = entries[0] if len(entries) == 1 and entries[0].is_dir() else root
         destination.mkdir(parents=True, exist_ok=True)
@@ -272,7 +227,7 @@ def _tool_version(executable: str, args: list[str]) -> str:
 # yt-dlp и плагин PO Token (wheel с PyPI, без pip)
 # --------------------------------------------------------------------------
 
-def _pypi_wheel(package: str) -> tuple[str, str]:
+def _pypi_wheel(package: str) -> tuple[str, str, str]:
     data = _get_json(f"https://pypi.org/pypi/{package}/json")
     version = (data.get("info") or {}).get("version") or ""
     files = data.get("urls") or []
@@ -281,7 +236,10 @@ def _pypi_wheel(package: str) -> tuple[str, str]:
     chosen = (pure or wheels or [None])[0]
     if not chosen or not version:
         raise RuntimeError(f"Для пакета {package} не найден wheel-архив на PyPI.")
-    return version, chosen["url"]
+    digest = ((chosen.get("digests") or {}).get("sha256") or "").strip()
+    if not digest:
+        raise RuntimeError(f"PyPI не сообщил контрольную сумму для {package}.")
+    return version, chosen["url"], digest
 
 
 def _install_wheel(archive: Path) -> None:
@@ -290,8 +248,7 @@ def _install_wheel(archive: Path) -> None:
     libs.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="media-downloader-wheel-") as folder:
         root = Path(folder)
-        with zipfile.ZipFile(archive) as package:
-            package.extractall(root)
+        net.safe_extract_zip(archive, root)
         for entry in root.iterdir():
             if entry.name == "yt_dlp_plugins":
                 # namespace-пакет: не удаляем, чтобы не потерять другие плагины
@@ -330,17 +287,18 @@ def install_ytdlp(force: bool = False, log=None, progress=None) -> str:
 
     selected = []
     for package in PYPI_PACKAGES:
-        version, url = _pypi_wheel(package)
-        selected.append((package, version, url))
+        version, url, digest = _pypi_wheel(package)
+        selected.append((package, version, url, digest))
 
-    for index, (package, version, url) in enumerate(selected):
+    for index, (package, version, url, digest) in enumerate(selected):
         emit(f"Устанавливаю {package} {version}...")
 
         def stage(fraction, index=index):
             report((index + max(0.0, min(fraction, 1.0))) / len(selected))
 
         with tempfile.TemporaryDirectory(prefix="media-downloader-wheel-dl-") as folder:
-            archive = _download(url, Path(folder) / f"{package}.whl", log=emit, progress=stage)
+            archive = _download(url, Path(folder) / f"{package}.whl", log=emit,
+                                progress=stage, expected_sha256=digest)
             _install_wheel(archive)
         emit(f"{package} {version} готов")
 
@@ -509,51 +467,93 @@ def missing_minimum() -> list[str]:
 
 
 def ensure_minimum(log=None, progress=None) -> list[str]:
-    """Ставит только то, без чего нельзя скачивать: yt-dlp и FFmpeg."""
+    """Ставит только то, без чего нельзя скачивать: yt-dlp и FFmpeg.
+
+    Компоненты скачиваются параллельно, чтобы первый запуск не ждал
+    последовательно два больших архива.
+    """
     emit = _emit(log)
+    report = _report(progress)
     errors: list[str] = []
-    steps = []
+    tasks = []
     if not ytdlp_ready():
-        steps.append("yt-dlp")
+        tasks.append(("yt-dlp", 30, lambda stage: install_ytdlp(log=emit, progress=stage)))
     if not ffmpeg_ready():
-        steps.append("ffmpeg")
+        tasks.append(("ffmpeg", 70, lambda stage: install_ffmpeg(log=emit, progress=stage)))
+    if not tasks:
+        return errors
 
-    for index, name in enumerate(steps):
-        def stage(fraction, index=index):
-            _report(progress)((index + max(0.0, min(fraction, 1.0))) / len(steps))
-
+    if len(tasks) == 1:
+        name, _weight, action = tasks[0]
         try:
-            if name == "yt-dlp":
-                install_ytdlp(log=emit, progress=stage)
-            else:
-                install_ffmpeg(log=emit, progress=stage)
+            action(report)
         except Exception as error:
             LOGGER.exception("Could not install component: %s", name)
             errors.append(f"{name}: {error}")
-    if steps:
-        _report(progress)(1.0)
+        return errors
+
+    total = sum(weight for _name, weight, _action in tasks)
+    fractions = {name: 0.0 for name, _weight, _action in tasks}
+    lock = threading.Lock()
+    last_reported = [-1.0]
+
+    def stage_for(name: str):
+        def update(fraction):
+            value = max(0.0, min(float(fraction), 1.0))
+            with lock:
+                fractions[name] = value
+                overall = sum(fractions[n] * weight for n, weight, _a in tasks) / total
+                if overall < 1.0 and overall - last_reported[0] < 0.005:
+                    return
+                last_reported[0] = overall
+            report(overall)
+        return update
+
+    def run(name: str, weight: int, action):
+        try:
+            action(stage_for(name))
+        except Exception as error:
+            LOGGER.exception("Could not install component: %s", name)
+            with lock:
+                errors.append(f"{name}: {error}")
+
+    threads = []
+    # FFmpeg качается дольше — запускаем его первым.
+    for name, weight, action in sorted(tasks, key=lambda item: item[1], reverse=True):
+        worker = threading.Thread(target=run, args=(name, weight, action),
+                                  name=f"Bootstrap-{name}", daemon=True)
+        threads.append(worker)
+        worker.start()
+    for worker in threads:
+        worker.join()
+    report(1.0)
     return errors
 
 
 def ensure_all(log=None, progress=None) -> list[str]:
     """Ставит всё, включая тяжёлые компоненты (Deno, Node.js, Git, PO Token)."""
     emit = _emit(log)
+    report = _report(progress)
     errors: list[str] = []
+    minimum_weight = STAGE_WEIGHTS["yt-dlp"] + STAGE_WEIGHTS["ffmpeg"]
+    total = sum(weight for _name, weight in STAGE_WEIGHTS.items()) or 1
+
+    def minimum_stage(fraction):
+        report(minimum_weight * max(0.0, min(fraction, 1.0)) / total)
+
+    errors.extend(ensure_minimum(log=emit, progress=minimum_stage))
+    done_weight = minimum_weight
     stages = [
-        ("yt-dlp", lambda stage: install_ytdlp(log=emit, progress=stage)),
-        ("ffmpeg", lambda stage: install_ffmpeg(log=emit, progress=stage)),
         ("deno", lambda stage: install_deno(log=emit, progress=stage)),
         ("node", lambda stage: install_node(log=emit, progress=stage)),
         ("git", lambda stage: install_git(log=emit, progress=stage)),
         ("po", lambda stage: _install_po_stage(emit, stage)),
     ]
-    total = sum(weight for _name, weight in STAGE_WEIGHTS.items()) or 1
-    done_weight = 0
     for name, action in stages:
         weight = STAGE_WEIGHTS.get(name, 10)
 
         def stage(fraction, done=done_weight, weight=weight):
-            _report(progress)((done + weight * max(0.0, min(fraction, 1.0))) / total)
+            report((done + weight * max(0.0, min(fraction, 1.0))) / total)
 
         try:
             action(stage)
@@ -561,7 +561,7 @@ def ensure_all(log=None, progress=None) -> list[str]:
             LOGGER.exception("Could not install component: %s", name)
             errors.append(f"{name}: {error}")
         done_weight += weight
-        _report(progress)(done_weight / total)
+        report(done_weight / total)
     return errors
 
 
@@ -596,7 +596,7 @@ class _ProgressWindow:
                 self._root.iconbitmap(icon)
             except Exception:
                 pass
-        width, height = 460, 200
+        width, height = 460, 220
         screen_w, screen_h = self._root.winfo_screenwidth(), self._root.winfo_screenheight()
         self._root.geometry(f"{width}x{height}+{(screen_w - width) // 2}+{(screen_h - height) // 3}")
 
@@ -633,6 +633,14 @@ class _ProgressWindow:
             wraplength=410,
         )
         self._label.pack(fill="x", pady=(10, 0))
+        tk.Label(
+            frame,
+            text="Окно можно свернуть — установка продолжится.",
+            bg="#20242a",
+            fg="#8c96a1",
+            font=("Segoe UI", 8),
+            anchor="w",
+        ).pack(fill="x", pady=(6, 0))
         self._done = False
         self._root.update_idletasks()
 
@@ -658,7 +666,8 @@ class _ProgressWindow:
                 if message == "__done__":
                     self._done = True
                     continue
-                self._label.config(text=message)
+                if message:
+                    self._label.config(text=message)
                 if fraction is not None:
                     self._bar["value"] = max(0.0, min(fraction * 100.0, 100.0))
         except Exception:
@@ -686,7 +695,7 @@ def startup(log=None) -> bool:
     def worker(report):
         errors = ensure_minimum(
             log=lambda message: report(message),
-            progress=lambda fraction: report(_stage_label(missing, fraction), fraction),
+            progress=lambda fraction: report("", fraction),
         )
         if errors:
             window._errors.extend(errors)
@@ -714,13 +723,6 @@ def startup(log=None) -> bool:
         return False
     LOGGER.info("Bootstrap finished successfully")
     return True
-
-
-def _stage_label(missing: list[str], fraction: float) -> str:
-    if not missing:
-        return "Готово"
-    index = min(int(fraction * len(missing)), len(missing) - 1)
-    return f"Устанавливаю: {missing[index]}"
 
 
 def _show_error(message: str) -> None:
