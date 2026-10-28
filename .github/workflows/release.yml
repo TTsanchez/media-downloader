@@ -9,6 +9,9 @@ on:
 permissions:
   contents: write
 
+env:
+  PYTHONUTF8: "1"
+
 jobs:
   build:
     runs-on: windows-latest
@@ -22,38 +25,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Check source encoding
+        run: python verify_encoding.py
+
+      - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-build.txt
 
-      - name: Prepare bundled FFmpeg and ffprobe
-        run: python prepare_ffmpeg.py
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: printf '%s' "${GITHUB_REF_NAME#v}" > version.txt
 
       - name: Build executable
-        run: >
-          pyinstaller --noconfirm --clean --onefile --windowed
-          --name "Media-Downloader"
-          --icon "icon.ico"
-          --add-data "icon.ico;."
-          --add-data "version.txt;."
-          --add-binary ".build-tools/ffmpeg/bin/ffmpeg.exe;ffmpeg/bin"
-          --add-binary ".build-tools/ffmpeg/bin/ffprobe.exe;ffmpeg/bin"
-          --add-data ".build-tools/ffmpeg/licenses;ffmpeg/licenses"
-          --add-data ".build-tools/ffmpeg/manifest.json;ffmpeg"
-          --add-data "main.py;."
-          --add-data "downloader.py;."
-          --add-data "pot.py;."
-          --add-data "utils.py;."
-          --add-data "README.md;."
-          --add-data "README.en.md;."
-          --collect-all ttkbootstrap
-          --collect-all yt_dlp
-          --collect-all yt_dlp_ejs
-          --collect-all yt_dlp_plugins
-          --hidden-import=yt_dlp_plugins.extractor.getpot_bgutil_http
-          --hidden-import=yt_dlp_plugins.extractor.getpot_bgutil_script
-          main.py
+        run: pyinstaller --noconfirm --clean Media-Downloader.spec
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

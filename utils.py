@@ -119,9 +119,35 @@ def app_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def ffmpeg_cache_dir() -> Path:
+def data_root() -> Path:
+    """Папка с компонентами и журналами (не требует прав администратора)."""
     base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".local" / "share")
-    return base / "Media-Downloader" / "tools" / "ffmpeg"
+    return base / "Media-Downloader"
+
+
+def tools_root() -> Path:
+    return data_root() / "tools"
+
+
+def pylibs_dir() -> Path:
+    """Сюда распаковываются python-пакеты (yt-dlp), скачанные при запуске."""
+    return tools_root() / "pylibs"
+
+
+def deno_dir() -> Path:
+    return tools_root() / "deno"
+
+
+def node_dir() -> Path:
+    return tools_root() / "node"
+
+
+def git_dir() -> Path:
+    return tools_root() / "git"
+
+
+def ffmpeg_cache_dir() -> Path:
+    return tools_root() / "ffmpeg"
 
 
 def _tool_candidates(tool: str) -> list[Path]:

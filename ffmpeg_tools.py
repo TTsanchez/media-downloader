@@ -17,9 +17,10 @@ TOOLS = ("ffmpeg.exe", "ffprobe.exe")
 LOGGER = logging.getLogger("media_downloader.ffmpeg")
 
 
-def install_ffmpeg(destination: Path, log=None) -> Path:
+def install_ffmpeg(destination: Path, log=None, progress=None) -> Path:
     """Загружает статическую Windows x64 сборку и сохраняет только нужные файлы."""
     emit = log or (lambda _message: None)
+    report = progress or (lambda _fraction: None)
     LOGGER.info("FFmpeg installation started: destination=%s", destination)
     info = get_ffmpeg_download()
     if not info:
@@ -40,6 +41,8 @@ def install_ffmpeg(destination: Path, log=None) -> Path:
                     digest.update(chunk)
                     received += len(chunk)
                     percent = min(received * 100 // total, 100) if total else 0
+                    if total:
+                        report(received / total)
                     if percent // 10 != last_percent // 10:
                         emit(f"Загрузка FFmpeg: {percent}%")
                         last_percent = percent

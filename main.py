@@ -10,11 +10,18 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import bootstrap
+
+# До импорта downloader/yt_dlp: обновлённый yt-dlp из tools\pylibs важнее встроенного.
+bootstrap.prepare_imports()
+
 from diagnostics import (get_diagnostics, initialize_logging, redact, register_secret,
                          report_exception, run_process)
 
 if __name__ == "__main__":
     initialize_logging(notify_fatal=True)
+    if not bootstrap.startup():
+        sys.exit(1)
 
 LOGGER = logging.getLogger("media_downloader.ui")
 
@@ -43,12 +50,9 @@ def resource_path(name: str) -> str:
     return os.path.join(base, name)
 
 from downloader import DownloadProgress, MediaDownloader
-from ffmpeg_tools import install_ffmpeg
 from pot import (
     SERVER_HOST,
     SERVER_PORT,
-    find_deno,
-    install_provider,
     provider_installed,
     server_running,
     start_server,
@@ -59,7 +63,6 @@ from utils import (
     check_cookies_file,
     check_youtube_network,
     detect_browsers,
-    ffmpeg_cache_dir,
     find_ffmpeg,
     find_ffprobe,
     format_bytes,
@@ -68,14 +71,13 @@ from utils import (
     get_app_asset_url,
     get_app_version,
     get_default_download_dir,
-    get_installed_ytdlp_version,
     get_latest_app_release,
     get_latest_pypi_version,
     is_browser_running,
     is_newer_app_version,
     is_newer_version,
     looks_like_url,
-    ytdlp_update_command,
+    tools_root,
     download_file,
     create_updater_script,
 )
@@ -87,11 +89,6 @@ RELEASES_URL = "https://github.com/TTsanchez/media-downloader/releases/latest"
 DEFAULT_ARCHIVE_FILE = Path.home() / ".media_downloader_archive.txt"
 
 _CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
-
-
-def _run_process(cmd, cwd=None, timeout=1800):
-    """Запускает команду и возвращает (код возврата, вывод)."""
-    return run_process(cmd, cwd=cwd, timeout=timeout)
 
 
 class VScroll(ttkb.Frame):
@@ -140,6 +137,7 @@ class YTApp(ttkb.Window):
         self._info_downloader = None
         self._updating = False
         self._installing_ffmpeg = False
+        self._installing_components = False
         self._exporting_report = False
         self._last_error_notice = 0.0
         self._log_storage_warning_shown = False
@@ -667,40 +665,42 @@ class YTApp(ttkb.Window):
             justify=LEFT,
         ).pack(anchor="w", pady=(6, 0))
 
-        fbox2 = ttkb.LabelFrame(tab_set, text="FFmpeg", padding=(14, 10, 14, 10))
-        fbox2.pack(fill=X, pady=(10, 0))
-        self.ffmpeg_lbl = ttkb.Label(fbox2, text="FFmpeg: проверка...", wraplength=820, justify=LEFT)
-        self.ffmpeg_lbl.pack(anchor="w")
-        frow = ttkb.Frame(fbox2)
-        frow.pack(fill=X, pady=(8, 0))
-        ttkb.Button(frow, text="Проверить", width=13, bootstyle="light-outline", command=self._check_ffmpeg).pack(side=LEFT)
-        self.btn_ffmpeg = ttkb.Button(frow, text="Восстановить FFmpeg", width=24, bootstyle="light-outline", command=self._download_ffmpeg_async)
-        self.btn_ffmpeg.pack(side=LEFT, padx=(8, 0))
-        ttkb.Label(
-            fbox2,
-            text="Включён в готовое приложение. Объединяет видео со звуком и конвертирует аудио. Восстановление не требует прав администратора.",
-            bootstyle="secondary",
-            font=("Segoe UI", 8),
-            wraplength=820,
-        ).pack(anchor="w", pady=(8, 0))
+        cbox = ttkb.LabelFrame(tab_set, text="Компоненты — скачиваются автоматически", padding=(14, 10, 14, 10))
+        cbox.pack(fill=X, pady=(10, 0))
+        self.comp_labels: dict[str, ttkb.Label] = {}
+        for key, title in (
+            ("ytdlp", "yt-dlp"),
+            ("ffmpeg", "FFmpeg"),
+            ("deno", "Deno"),
+            ("node", "Node.js"),
+            ("git", "Git"),
+            ("pot", "PO Token"),
+        ):
+            comp_row = ttkb.Frame(cbox)
+            comp_row.pack(fill=X, pady=1)
+            ttkb.Label(comp_row, text=f"{title}:", width=10).pack(side=LEFT)
+            label = ttkb.Label(comp_row, text="проверка...", wraplength=700, justify=LEFT)
+            label.pack(side=LEFT, fill=X, expand=True)
+            self.comp_labels[key] = label
 
-        kbox = ttkb.LabelFrame(tab_set, text="Компоненты для работы с YouTube", padding=(14, 10, 14, 10))
-        kbox.pack(fill=X, pady=(10, 0))
-        self.deno_lbl = ttkb.Label(kbox, text="Deno: проверка...", wraplength=820, justify=LEFT)
-        self.deno_lbl.pack(anchor="w")
-        self.pot_lbl = ttkb.Label(kbox, text="PO Token: проверка...", wraplength=820, justify=LEFT)
-        self.pot_lbl.pack(anchor="w", pady=(4, 0))
-        krow = ttkb.Frame(kbox)
-        krow.pack(fill=X, pady=(8, 0))
-        ttkb.Button(krow, text="Проверить", width=13, bootstyle="light-outline", command=self._check_components).pack(side=LEFT)
-        ttkb.Button(krow, text="Установить Deno", width=20, bootstyle="light-outline", command=self._install_deno_async).pack(side=LEFT, padx=(8, 0))
-        ttkb.Button(krow, text="Установить PO Token", width=24, bootstyle="light-outline", command=self._install_pot_async).pack(side=LEFT, padx=(8, 0))
+        crow = ttkb.Frame(cbox)
+        crow.pack(fill=X, pady=(8, 0))
+        ttkb.Button(crow, text="Проверить", width=13, bootstyle="light-outline",
+                    command=self._check_components).pack(side=LEFT)
+        self.btn_install_all = ttkb.Button(crow, text="Установить всё", width=20,
+                                           bootstyle="success-outline", command=self._install_all_async)
+        self.btn_install_all.pack(side=LEFT, padx=(8, 0))
+        self.btn_ffmpeg = ttkb.Button(crow, text="Восстановить FFmpeg", width=24,
+                                      bootstyle="light-outline", command=self._download_ffmpeg_async)
+        self.btn_ffmpeg.pack(side=LEFT, padx=(8, 0))
+        ttkb.Button(crow, text="Открыть папку", width=16, bootstyle="light-outline",
+                    command=self._open_tools_dir).pack(side=LEFT, padx=(8, 0))
         ttkb.Label(
-            kbox,
+            cbox,
             text=(
-                "YouTube требует PO Token и JavaScript-челлендж. Без них — ошибка «The page needs to be reloaded».\n"
-                "Deno ставится через winget. PO Token — локальный Node.js-сервер (~165 МБ, ставится один раз, нужен Node.js и Git).\n"
-                "Нужны только для защищённых видео; для открытых часто работает и без них."
+                "yt-dlp и FFmpeg устанавливаются сами при первом запуске.\n"
+                "Deno, Node.js, Git и PO Token нужны для защиты YouTube — их ставит кнопка «Установить всё».\n"
+                f"Хранилище: {tools_root()} — права администратора не требуются."
             ),
             bootstyle="secondary",
             font=("Segoe UI", 8),
@@ -758,7 +758,7 @@ class YTApp(ttkb.Window):
             ubox,
             text=(
                 "YouTube часто меняется, и свежий yt-dlp нередко решает ошибки загрузки.\n"
-                "В собранном .exe yt-dlp вшит внутри — там обновление выходит новой версией программы."
+                "yt-dlp хранится в папке компонентов и обновляется здесь — переустанавливать программу не нужно."
             ),
             bootstyle="secondary",
             font=("Segoe UI", 8),
@@ -1471,7 +1471,7 @@ class YTApp(ttkb.Window):
         messagebox.showerror("Обновление", error)
 
     def _check_updates(self):
-        current = get_installed_ytdlp_version()
+        current = bootstrap.installed_ytdlp_version()
         self._post_ui(lambda: self._set_ytdlp_bottom(current))
         latest = get_latest_pypi_version("yt-dlp")
         if not latest:
@@ -1503,16 +1503,6 @@ class YTApp(ttkb.Window):
     def _update_ytdlp_async(self):
         if self._updating:
             return
-        if ytdlp_update_command() is None:
-            if messagebox.askyesno(
-                "Обновление yt-dlp",
-                "Эта сборка (.exe) содержит yt-dlp внутри — отдельно обновить его нельзя.\n\n"
-                "Скачайте новую версию программы со страницы релизов. Открыть её сейчас?",
-            ):
-                import webbrowser
-
-                webbrowser.open(RELEASES_URL)
-            return
         if self.is_downloading or self._q_running or self._info_loading:
             messagebox.showinfo("Обновление yt-dlp", "Сначала дождитесь окончания загрузки.")
             return
@@ -1520,22 +1510,26 @@ class YTApp(ttkb.Window):
         self.btn_download.configure(state="disabled")
         self.btn_q_start.configure(state="disabled")
         self.btn_info.configure(state="disabled")
+        self._log("Обновляю yt-dlp...")
         threading.Thread(target=self._update_ytdlp, daemon=True).start()
 
     def _update_ytdlp(self):
-        self._post_ui(lambda: self._log("Обновляю yt-dlp..."))
-        cmd = ytdlp_update_command()
-        code, out = _run_process(cmd, timeout=900) if cmd else (1, "обновление недоступно")
-        if code == 0:
-            self._post_ui(lambda: self._log("yt-dlp обновлён. Перезапустите программу, чтобы применить."))
-            self._post_ui(lambda: messagebox.showinfo("yt-dlp", "yt-dlp обновлён.\n\nПерезапустите программу для применения."),
-            )
-        else:
-            tail = (out or "").strip()[-500:]
-            self._post_ui(lambda: self._log(f"Не удалось обновить yt-dlp:\n{tail}"))
-            self._post_ui(lambda: messagebox.showerror("yt-dlp", "Не удалось обновить yt-dlp. Подробности в журнале."))
-        self._post_ui(self._check_updates_async)
-        self._post_ui(self._finish_dependency_update)
+        try:
+            version = bootstrap.install_ytdlp(force=True, log=self._log)
+            self._log(f"yt-dlp обновлён до {version or 'последней версии'}.")
+            self._post_ui(lambda v=version: messagebox.showinfo(
+                "yt-dlp",
+                f"yt-dlp обновлён до {v or 'последней версии'}.\n\n"
+                "Изменения применятся при следующем запуске программы.",
+            ))
+        except Exception as e:
+            LOGGER.exception("Operation failed: _update_ytdlp")
+            self._log(f"Не удалось обновить yt-dlp: {e}")
+            self._post_ui(lambda err=str(e): messagebox.showerror("yt-dlp", f"Не удалось обновить yt-dlp:\n\n{err}"))
+        finally:
+            self._post_ui(self._check_updates_async)
+            self._post_ui(self._check_components)
+            self._post_ui(self._finish_dependency_update)
 
     def _finish_dependency_update(self):
         self._updating = False
@@ -1662,6 +1656,11 @@ class YTApp(ttkb.Window):
                 return False
         return True
 
+    def _component_label(self, key: str, text: str, style: str) -> None:
+        label = getattr(self, "comp_labels", {}).get(key)
+        if label is not None:
+            label.config(text=text, bootstyle=style)
+
     def _check_ffmpeg(self):
         ffmpeg = find_ffmpeg()
         ffprobe = find_ffprobe()
@@ -1671,46 +1670,121 @@ class YTApp(ttkb.Window):
         LOGGER.info("FFmpeg check: ffmpeg=%s ffprobe=%s", ffmpeg, ffprobe)
         if ffmpeg and ffprobe:
             self.ffmpeg_badge.config(text="FFmpeg: найден", bootstyle="success")
-            self.ffmpeg_lbl.config(text=f"FFmpeg найден: {ffmpeg}", bootstyle="success")
-            self._log(f"FFmpeg найден: {ffmpeg}")
+            self._component_label("ffmpeg", ffmpeg, "success")
         elif ffmpeg:
             self.ffmpeg_badge.config(text="FFmpeg: неполный", bootstyle="warning")
-            self.ffmpeg_lbl.config(
-                text="Набор компонентов неполный. Нажмите «Восстановить FFmpeg», чтобы установить недостающие файлы.",
-                bootstyle="warning",
+            self._component_label(
+                "ffmpeg",
+                "Набор неполный (нет ffprobe). Нажмите «Восстановить FFmpeg».",
+                "warning",
             )
             self._log("Найден FFmpeg, но отсутствует ffprobe. Доступно восстановление в настройках.")
         else:
             self.ffmpeg_badge.config(text="FFmpeg: не найден", bootstyle="danger")
-            self.ffmpeg_lbl.config(text="Компоненты обработки видео отсутствуют. Нажмите «Восстановить FFmpeg».", bootstyle="danger")
+            self._component_label(
+                "ffmpeg",
+                "Не найден — нужен для объединения видео со звуком. Нажмите «Восстановить FFmpeg».",
+                "danger",
+            )
             self._log("Для объединения видео со звуком и конвертации аудио восстановите FFmpeg в настройках.")
 
     def _check_components(self):
-        deno = find_deno()
+        status = bootstrap.component_status()
         diagnostic = get_diagnostics()
         if diagnostic:
-            components = {
-                "deno": deno, "po_token_installed": provider_installed(), "po_token_running": server_running(),
-            }
-            diagnostic.update_context("youtube_components", components)
-            LOGGER.info("YouTube components: %s", components)
-        if deno:
-            self.deno_lbl.config(text=f"Deno: найден ({deno})", bootstyle="success")
-        else:
-            self.deno_lbl.config(
-                text="Deno: не найден — нужен для решения проверок YouTube. Нажмите «Установить Deno».",
-                bootstyle="danger",
-            )
+            diagnostic.update_context("components", status)
+            diagnostic.update_context("youtube_components", {
+                "deno": status["deno"]["path"],
+                "po_token_installed": status["pot"]["ready"],
+                "po_token_running": status["pot"]["running"],
+            })
+            LOGGER.info("Components: %s", status)
 
-        if server_running():
-            self.pot_lbl.config(text=f"PO Token сервер: запущен ({SERVER_HOST}:{SERVER_PORT})", bootstyle="success")
-        elif provider_installed():
-            self.pot_lbl.config(text="PO Token сервер: установлен, но не запущен. Запустится автоматически.", bootstyle="warning")
+        ytdlp = status["ytdlp"]
+        if ytdlp["ready"]:
+            self._component_label("ytdlp", f"установлен {ytdlp['version'] or ''}".strip(), "success")
         else:
-            self.pot_lbl.config(
-                text="PO Token сервер: не установлен. Нажмите «Установить PO Token».",
-                bootstyle="danger",
-            )
+            self._component_label("ytdlp", "не установлен — скачается автоматически при запуске", "danger")
+
+        if status["ffmpeg"]["ready"]:
+            self._component_label("ffmpeg", status["ffmpeg"]["path"], "success")
+        else:
+            self._component_label("ffmpeg", "не установлен — нажмите «Восстановить FFmpeg»", "danger")
+
+        for key, hint in (
+            ("deno", "нужен для JavaScript-проверок YouTube"),
+            ("node", "нужен для PO Token"),
+            ("git", "нужен для установки PO Token"),
+        ):
+            item = status[key]
+            if item["ready"]:
+                self._component_label(key, item["path"], "success")
+            else:
+                self._component_label(key, f"не установлен — {hint}", "warning")
+
+        if status["pot"]["running"]:
+            self._component_label("pot", f"сервер запущен ({SERVER_HOST}:{SERVER_PORT})", "success")
+        elif status["pot"]["ready"]:
+            version = status["pot"].get("version") or ""
+            suffix = f" {version}" if version else ""
+            self._component_label("pot", f"установлен{suffix}, сервер запустится автоматически", "warning")
+        else:
+            self._component_label("pot", "не установлен — нажмите «Установить всё»", "warning")
+
+        ok = ytdlp["ready"] and status["ffmpeg"]["ready"]
+        if ok:
+            self.ffmpeg_badge.config(text="Компоненты: готовы", bootstyle="success")
+
+    def _open_tools_dir(self):
+        path = tools_root()
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(path))
+            self._log(f"Открыта папка компонентов: {path}")
+        except Exception as e:
+            LOGGER.exception("Operation failed: _open_tools_dir")
+            messagebox.showerror("Компоненты", f"Не удалось открыть папку:\n{path}\n\n{e}")
+
+    def _install_all_async(self):
+        if self._installing_components:
+            return
+        if self.is_downloading or self._q_running:
+            messagebox.showinfo("Компоненты", "Дождитесь окончания загрузок перед установкой компонентов.")
+            return
+        self._installing_components = True
+        self.btn_install_all.configure(state="disabled", text="Установка...")
+        self.btn_ffmpeg.configure(state="disabled")
+        threading.Thread(target=self._install_all_components, daemon=True).start()
+
+    def _install_all_components(self):
+        self._log("Проверяю компоненты и доустанавливаю недостающие...")
+        try:
+            errors = bootstrap.ensure_all(log=self._log)
+        except Exception as e:
+            LOGGER.exception("Operation failed: _install_all_components")
+            errors = [str(e)]
+        if errors:
+            self._log("Не удалось установить: " + "; ".join(errors))
+            self._post_ui(lambda errs=list(errors): messagebox.showerror(
+                "Компоненты",
+                "Не всё удалось установить:\n\n" + "\n".join(errs) + "\n\nПодробности в журнале.",
+            ))
+        else:
+            self._log("Все компоненты готовы.")
+            import pot
+
+            if pot.provider_installed() and not pot.server_running():
+                self._log("Запускаю PO Token сервер...")
+                if pot.start_server(log=self._log):
+                    self._log("PO Token работает.")
+        self._post_ui(self._finish_install_all)
+
+    def _finish_install_all(self):
+        self._installing_components = False
+        self.btn_install_all.configure(state="normal", text="Установить всё")
+        self.btn_ffmpeg.configure(state="normal")
+        self._check_ffmpeg()
+        self._check_components()
 
     def _check_network_async(self):
         self.net_lbl.config(text="Проверяю доступ к YouTube...", bootstyle="secondary")
@@ -1746,41 +1820,6 @@ class YTApp(ttkb.Window):
         self._check_components()
         return ok
 
-    def _install_deno_async(self):
-        def work():
-            self._log("Устанавливаю Deno через winget...")
-            code, _ = _run_process(
-                ["winget", "install", "--id", "DenoLand.Deno", "--exact", "--silent",
-                 "--accept-package-agreements", "--accept-source-agreements"],
-                timeout=900,
-            )
-            if code == 0:
-                self._log("Deno установлен.")
-            else:
-                self._log("winget не смог поставить Deno. Скачайте вручную: https://deno.com")
-            self._post_ui(self._check_components)
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _install_pot_async(self):
-        def work():
-            self._log("Устанавливаю PO Token провайдер, это займёт несколько минут...")
-            ok, msg = install_provider(log=lambda m: self._log(m))
-            if ok:
-                self._log(f"Провайдер установлен: {msg}")
-                self._log("Запускаю сервер...")
-                if start_server(log=lambda m: self._log(m)):
-                    self._log("Готово — PO Token работает.")
-                else:
-                    self._log("Сервер не поднялся, проверьте журнал.")
-                self._post_ui(lambda: messagebox.showinfo("PO Token", "PO Token провайдер установлен. Статус запуска указан в журнале."))
-            else:
-                self._log(f"Ошибка установки: {msg}")
-                self._post_ui(lambda: messagebox.showerror("PO Token", f"Не удалось установить:\n\n{msg}"))
-            self._post_ui(self._check_components)
-
-        threading.Thread(target=work, daemon=True).start()
-
     def _download_ffmpeg_async(self):
         if self._installing_ffmpeg:
             return
@@ -1791,13 +1830,9 @@ class YTApp(ttkb.Window):
         self.btn_ffmpeg.configure(state="disabled")
         threading.Thread(target=self._download_ffmpeg, daemon=True).start()
 
-    @staticmethod
-    def _ffmpeg_root() -> Path:
-        return ffmpeg_cache_dir()
-
     def _download_ffmpeg(self):
         try:
-            target = install_ffmpeg(self._ffmpeg_root(), log=self._log)
+            target = bootstrap.install_ffmpeg(log=self._log)
             self._post_ui(lambda: messagebox.showinfo("FFmpeg", f"Компоненты обработки видео установлены.\n\n{target}"))
         except Exception as e:
             LOGGER.exception("Operation failed: _download_ffmpeg")
@@ -1810,6 +1845,7 @@ class YTApp(ttkb.Window):
         self._installing_ffmpeg = False
         self.btn_ffmpeg.configure(state="normal")
         self._check_ffmpeg()
+        self._check_components()
 
     # ---------- info ----------
 

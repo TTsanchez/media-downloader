@@ -17,6 +17,7 @@ ENV/
 
 # PyInstaller
 *.spec
+!Media-Downloader.spec
 
 # Project-local user data / secrets (never commit)
 *.media_downloader_config.json

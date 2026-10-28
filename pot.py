@@ -13,10 +13,11 @@ import sys
 import threading
 from pathlib import Path
 from diagnostics import redact, run_process
+from utils import deno_dir, git_dir, node_dir
 
 LOGGER = logging.getLogger("media_downloader.pot")
 
-PROVIDER_VERSION = "2.0.0"
+PROVIDER_VERSION = "2.0.2"
 PROVIDER_REPO = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git"
 PROVIDER_URL = f"{PROVIDER_REPO}#v{PROVIDER_VERSION}"
 SERVER_HOST = "127.0.0.1"
@@ -60,10 +61,25 @@ def provider_installed() -> bool:
     return server_main().exists() and (server_dir() / "node_modules").exists()
 
 
+def provider_version() -> str:
+    """Версия собранного провайдера (из server/package.json)."""
+    import json
+
+    try:
+        data = json.loads((server_dir() / "package.json").read_text(encoding="utf-8"))
+        return str(data.get("version") or "")
+    except Exception:
+        return ""
+
+
 def find_deno() -> str | None:
     # Возвращаем ПОЛНЫЙ путь, а не просто имя: в собранном .exe рабочий каталог
     # и PATH могут отличаться, и yt-dlp не сможет запустить "deno.exe".
     import shutil
+
+    managed = deno_dir() / ("deno.exe" if os.name == "nt" else "deno")
+    if managed.is_file():
+        return str(managed)
 
     for name in ("deno.exe", "deno"):
         full = shutil.which(name)
@@ -107,19 +123,41 @@ def find_deno() -> str | None:
 
 
 def find_node() -> str | None:
+    import shutil
+
+    managed = node_dir() / ("node.exe" if os.name == "nt" else "node")
+    if managed.is_file():
+        return str(managed)
+
     for name in ("node.exe", "node"):
+        full = shutil.which(name)
+        if not full:
+            continue
         try:
             r = subprocess.run(
-                [name, "--version"],
+                [full, "--version"],
                 capture_output=True,
                 timeout=10,
                 creationflags=CREATE_NO_WINDOW,
             )
             if r.returncode == 0:
-                return name
+                return full
         except Exception:
             pass
     return None
+
+
+def tool_environment() -> dict:
+    """PATH с нашими портативными Node.js, Git и Deno (для npm и сборки)."""
+    env = dict(os.environ)
+    extra: list[str] = []
+    for folder, relative in ((node_dir(), ""), (git_dir(), "cmd"), (git_dir(), "bin"), (deno_dir(), "")):
+        candidate = folder / relative if relative else folder
+        if candidate.is_dir():
+            extra.append(str(candidate))
+    if extra:
+        env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
+    return env
 
 
 def _port_open() -> bool:
@@ -133,10 +171,10 @@ def server_running() -> bool:
 
 
 def _run(cmd: list[str], cwd: Path | None = None, timeout: int = 1800) -> tuple[int, str]:
-    return run_process(cmd, cwd=cwd, timeout=timeout)
+    return run_process(cmd, cwd=cwd, timeout=timeout, env=tool_environment())
 
 
-def install_provider(log=None) -> tuple[bool, str]:
+def install_provider(log=None, force: bool = False) -> tuple[bool, str]:
     """Клонирует и собирает bgutil-провайдер. Блокирующий вызов."""
     def emit(msg: str):
         if log:
@@ -144,11 +182,11 @@ def install_provider(log=None) -> tuple[bool, str]:
 
     git = _find_git()
     if not git:
-        return False, "Не найден git. Установите Git for Windows: https://git-scm.com/download/win"
+        return False, "Не найден git. Нажмите «Установить всё» в настройках."
 
     node = find_node()
     if not node:
-        return False, "Не найден Node.js (нужен версии 20+). Установите: https://nodejs.org"
+        return False, "Не найден Node.js (нужен версии 20+). Нажмите «Установить всё» в настройках."
 
     npm = _find_npm()
     if not npm:
@@ -156,69 +194,115 @@ def install_provider(log=None) -> tuple[bool, str]:
 
     provider_dir().mkdir(parents=True, exist_ok=True)
 
-    emit(f"Клонирую PO Token провайдер (версия {PROVIDER_VERSION})...")
-    code, out = _run([git, "clone", "--depth", "1", "--branch", PROVIDER_VERSION, PROVIDER_REPO, str(provider_dir())])
-    if code != 0 and "already exists" not in out:
-        # Повторная попытка после неудачного клона
-        emit("Клон не удался, повторяю после очистки...")
-        _run([git, "clone", "--depth", "1", "--branch", PROVIDER_VERSION, PROVIDER_REPO, str(provider_dir())])
+    if server_dir().exists() and force:
+        emit("Удаляю предыдущую сборку провайдера...")
+        import shutil
+
+        shutil.rmtree(server_dir(), ignore_errors=True)
+
     if not server_dir().exists():
-        return False, f"Не удалось склонировать провайдер:\n{out[-400:]}"
+        if (provider_dir() / ".git").exists():
+            emit("Обновляю исходники провайдера...")
+            _run([git, "-C", str(provider_dir()), "fetch", "--depth", "1", "origin",
+                  f"refs/tags/{PROVIDER_VERSION}:refs/tags/{PROVIDER_VERSION}"])
+            _run([git, "-C", str(provider_dir()), "checkout", "--force", PROVIDER_VERSION])
+        else:
+            # Неполный клон от прошлой неудачной попытки мешает git clone
+            if any(provider_dir().iterdir()):
+                import shutil
 
-    emit("Ставлю зависимости Node.js (это долго, ~2-5 минут)...")
-    code, out = _run([npm, "ci"], cwd=server_dir())
-    if code != 0:
-        code, out2 = _run([npm, "install"], cwd=server_dir())
-        out = out + "\n" + out2
+                shutil.rmtree(provider_dir(), ignore_errors=True)
+                provider_dir().mkdir(parents=True, exist_ok=True)
+            emit(f"Клонирую PO Token провайдер (версия {PROVIDER_VERSION})...")
+            code, out = _run([git, "clone", "--depth", "1", "--branch", PROVIDER_VERSION,
+                              PROVIDER_REPO, str(provider_dir())])
+            if code != 0:
+                return False, f"Не удалось склонировать провайдер:\n{out[-400:]}"
+    if not server_dir().exists():
+        return False, "В исходниках провайдера нет папки server."
+
+    if not (server_dir() / "node_modules").exists():
+        emit("Ставлю зависимости Node.js (это долго, ~2-5 минут)...")
+        code, out = _run([npm, "ci"], cwd=server_dir())
         if code != 0:
-            return False, f"npm ci не удался:\n{out[-400:]}"
+            code, out2 = _run([npm, "install"], cwd=server_dir())
+            out = out + "\n" + out2
+            if code != 0:
+                return False, f"npm ci не удался:\n{out[-400:]}"
 
-    emit("Собираю провайдер...")
-    for cmd in (
-        [node, "node_modules/typescript/bin/tsc"],
-        ["npx.cmd", "tsc"],
-        ["npx", "tsc"],
-    ):
-        code, out = _run(cmd, cwd=server_dir())
-        if code == 0 and server_main().exists():
-            break
-    else:
-        return False, f"Сборка не удалась:\n{out[-400:]}"
+    if not server_main().exists():
+        emit("Собираю провайдер...")
+        for cmd in (
+            [node, "node_modules/typescript/bin/tsc"],
+            [_find_npx() or "npx.cmd", "tsc"],
+            ["npx", "tsc"],
+        ):
+            code, out = _run(cmd, cwd=server_dir())
+            if code == 0 and server_main().exists():
+                break
+        else:
+            return False, f"Сборка не удалась:\n{out[-400:]}"
 
     emit("Провайдер готов.")
     return True, str(server_main())
 
 
 def _find_git() -> str | None:
+    managed = git_dir() / "cmd" / ("git.exe" if os.name == "nt" else "git")
+    if managed.is_file():
+        return str(managed)
+    managed = git_dir() / "bin" / ("git.exe" if os.name == "nt" else "git")
+    if managed.is_file():
+        return str(managed)
+
+    import shutil
+
     for name in ("git.exe", "git"):
+        full = shutil.which(name)
+        if not full:
+            continue
         try:
             r = subprocess.run(
-                [name, "--version"],
+                [full, "--version"],
                 capture_output=True,
                 timeout=10,
                 creationflags=CREATE_NO_WINDOW,
             )
             if r.returncode == 0:
-                return name
+                return full
         except Exception:
             pass
     return None
 
 
 def _find_npm() -> str | None:
+    managed = node_dir() / ("npm.cmd" if os.name == "nt" else "npm")
+    if managed.is_file():
+        return str(managed)
+
+    import shutil
+
     for name in ("npm.cmd", "npm"):
+        full = shutil.which(name)
+        if not full:
+            continue
         try:
             r = subprocess.run(
-                [name, "--version"],
+                [full, "--version"],
                 capture_output=True,
                 timeout=20,
                 creationflags=CREATE_NO_WINDOW,
             )
             if r.returncode == 0:
-                return name
+                return full
         except Exception:
             pass
     return None
+
+
+def _find_npx() -> str | None:
+    managed = node_dir() / ("npx.cmd" if os.name == "nt" else "npx")
+    return str(managed) if managed.is_file() else None
 
 
 def start_server(log=None) -> bool:

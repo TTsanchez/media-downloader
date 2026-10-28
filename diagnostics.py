@@ -403,13 +403,14 @@ def report_exception(title, exc_info=None):
         LOG.error("%s", title, exc_info=info)
 
 
-def run_process(cmd, cwd=None, timeout=1800):
+def run_process(cmd, cwd=None, timeout=1800, env=None):
     logger = logging.getLogger("media_downloader.process")
     started = time.monotonic()
-    logger.info("Process start: command=%s cwd=%s timeout=%s", cmd, cwd, timeout)
+    logger.info("Process start: command=%s cwd=%s timeout=%s env_override=%s",
+                cmd, cwd, timeout, bool(env))
     try:
         result = subprocess.run(cmd, cwd=str(cwd) if cwd else None, capture_output=True,
-                                text=True, errors="replace", timeout=timeout,
+                                text=True, errors="replace", timeout=timeout, env=env,
                                 creationflags=0x08000000 if os.name == "nt" else 0)
         output = (result.stdout or "") + (result.stderr or "")
         logger.log(logging.ERROR if result.returncode else logging.DEBUG,

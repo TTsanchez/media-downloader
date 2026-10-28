@@ -18,8 +18,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Check source encoding
+        run: python verify_encoding.py
+
       - name: Check syntax
-        run: python -m py_compile main.py downloader.py utils.py pot.py ffmpeg_tools.py prepare_ffmpeg.py diagnostics.py
+        run: python -m py_compile main.py downloader.py utils.py pot.py ffmpeg_tools.py bootstrap.py prepare_ffmpeg.py diagnostics.py
 
       - name: Install dependencies
         run: pip install -r requirements.txt

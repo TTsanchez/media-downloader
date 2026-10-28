@@ -2,6 +2,7 @@
 chcp 65001 > nul
 title Media Downloader - build
 cd /d "%~dp0"
+set "PYTHONUTF8=1"
 
 echo ==========================================
 echo   Media Downloader - сборка .exe
@@ -19,37 +20,18 @@ set "BUILD_PYTHON=%~dp0venv\Scripts\python.exe"
 echo Ставлю зависимости...
 "%BUILD_PYTHON%" -m pip install -q --upgrade pip
 if errorlevel 1 goto :fail
-"%BUILD_PYTHON%" -m pip install -q -r requirements.txt
+"%BUILD_PYTHON%" -m pip install -q -r requirements-build.txt
 if errorlevel 1 goto :fail
 
-echo Подготавливаю встроенные FFmpeg и ffprobe...
-"%BUILD_PYTHON%" prepare_ffmpeg.py
+echo Проверяю кодировку исходников...
+"%BUILD_PYTHON%" verify_encoding.py
 if errorlevel 1 goto :fail
 
 echo.
 echo Собираю .exe (это 1-3 минуты)...
 echo.
 
-set BUILD_ARGS=--noconfirm --clean --onefile --windowed ^
-    --name "Media-Downloader" ^
-    --add-data "version.txt;." ^
-    --add-binary ".build-tools\ffmpeg\bin\ffmpeg.exe;ffmpeg/bin" ^
-    --add-binary ".build-tools\ffmpeg\bin\ffprobe.exe;ffmpeg/bin" ^
-    --add-data ".build-tools\ffmpeg\licenses;ffmpeg/licenses" ^
-    --add-data ".build-tools\ffmpeg\manifest.json;ffmpeg" ^
-    --collect-all ttkbootstrap ^
-    --collect-all yt_dlp ^
-    --collect-all yt_dlp_ejs ^
-    --collect-all yt_dlp_plugins ^
-    --hidden-import=yt_dlp_plugins.extractor.getpot_bgutil_http ^
-    --hidden-import=yt_dlp_plugins.extractor.getpot_bgutil_script
-
-if exist "icon.ico" (
-    "%BUILD_PYTHON%" -m PyInstaller %BUILD_ARGS% --icon="icon.ico" --add-data "icon.ico;." main.py
-) else (
-    "%BUILD_PYTHON%" -m PyInstaller %BUILD_ARGS% main.py
-)
-
+"%BUILD_PYTHON%" -m PyInstaller --noconfirm --clean Media-Downloader.spec
 if errorlevel 1 goto :fail
 
 echo.

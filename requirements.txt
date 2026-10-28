@@ -1,7 +1,2 @@
-yt-dlp==2026.8.19
-yt-dlp-ejs==0.8.0
-bgutil-ytdlp-pot-provider==2.0.0
-ttkbootstrap
-Pillow
-requests
-pyinstaller
+-r requirements-build.txt
+bgutil-ytdlp-pot-provider

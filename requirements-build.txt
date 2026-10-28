@@ -1,0 +1,10 @@
+# Зависимости сборки.
+# yt-dlp и yt-dlp-ejs нужны только для анализа PyInstaller: он должен увидеть
+# их зависимости (stdlib и сторонние пакеты). Сами пакеты в .exe не попадают —
+# их вырезает Media-Downloader.spec, а приложение скачивает их при первом запуске.
+ttkbootstrap
+Pillow
+requests
+pyinstaller
+yt-dlp
+yt-dlp-ejs

@@ -128,11 +128,16 @@ Enable **Settings → Download archive → Skip already downloaded** — the app
 
 ## 🧩 Requirements
 
-**The ready-to-run `.exe` includes FFmpeg and ffprobe.** No separate installation or `PATH` configuration is needed. They merge video with audio and convert audio formats.
+**The ready-to-run `.exe` is a compact build (~22 MB).** It installs everything it needs on first launch into `%LOCALAPPDATA%\Media-Downloader`; no administrator rights required:
 
-When running from source, use **Settings → Restore FFmpeg**. Components are stored under `%LOCALAPPDATA%\Media-Downloader\tools\ffmpeg` without administrator permissions. System `PATH` and an adjacent `ffmpeg\bin` directory are also supported.
+- yt-dlp, yt-dlp-ejs and the PO Token plugin — from PyPI;
+- FFmpeg and ffprobe — a static Windows build.
 
-`build_exe.bat` downloads and verifies FFmpeg before packaging. Component licenses and source information are bundled with the application.
+The first launch takes 1–2 minutes and shows a progress window. After that the app opens immediately. If something was removed, restore components via **Settings → Components**.
+
+Heavier components (Deno, Node.js, Git and PO Token) are installed on demand with **"Install all"** — they are only needed for protected YouTube videos.
+
+`build_exe.bat` produces the same compact build: FFmpeg and yt-dlp are not bundled into the `.exe`.
 
 ## 🍪 Cookies
 
@@ -154,14 +159,17 @@ Cookies never leave your machine — they are read locally and used only for req
 
 ## 🧱 YouTube components
 
-Since 2025 YouTube requires a **PO Token** and a **JavaScript challenge**. Without them many videos fail (`The page needs to be reloaded`). The app installs everything itself: **Settings → YouTube components**.
+Since 2025 YouTube requires a **PO Token** and a **JavaScript challenge**. Without them many videos fail (`The page needs to be reloaded`). The app installs everything itself: **Settings → Components**.
 
 | Component | Purpose | How it installs |
 |---|---|---|
-| **Deno** | Runs YouTube's JS challenge | "Install Deno" button (via winget) |
-| **PO Token server** | Generates access tokens | "Install PO Token" button (needs Node.js and Git) |
+| **yt-dlp** | Downloads video | Automatically on first launch |
+| **FFmpeg** | Merges video with audio | Automatically on first launch |
+| **Deno** | Runs YouTube's JS challenge | "Install all" button |
+| **Node.js and Git** | Needed to build the PO Token server | "Install all" button |
+| **PO Token server** | Generates access tokens | "Install all" button |
 
-The PO Token server is the local Node.js program [bgutil](https://github.com/Brainicism/bgutil-ytdlp-pot-provider). It installs once to `%LOCALAPPDATA%\Media-Downloader\pot` (~165 MB), starts automatically on `127.0.0.1:4416` and stops on exit. Nothing is uploaded.
+Everything installs portably under `%LOCALAPPDATA%\Media-Downloader\tools` — no installers, winget or administrator rights. The PO Token server is the local Node.js program [bgutil](https://github.com/Brainicism/bgutil-ytdlp-pot-provider). It is built once, starts automatically on `127.0.0.1:4416` and stops on exit. Nothing is uploaded.
 
 ## 🌐 Network and YouTube blocking (VPN / proxy)
 
@@ -211,11 +219,9 @@ Power loss, forced termination and failures before Python starts cannot be inter
 Sites change their protections occasionally, so it pays to keep yt-dlp fresh. The app has it built in: **Settings → yt-dlp update**.
 
 - **Check for updates** — shows the installed and the latest version.
-- **Update yt-dlp** — installs the latest version (when running from source).
+- **Update yt-dlp** — downloads a fresh version into the components folder. Works in the packaged `.exe` too; no need to reinstall the app. Changes apply after restart.
 
 On startup the app quietly checks for a new version and logs it.
-
-> In the packaged `.exe` yt-dlp is bundled, so updates ship as a new app release from the [**Releases**](../../releases/latest) page.
 
 Manually (from source):
 
@@ -241,9 +247,11 @@ build_exe.bat
 | File | Purpose |
 |---|---|
 | `main.py` | GUI (tkinter + ttkbootstrap) |
+| `bootstrap.py` | Checks and installs components on startup |
 | `downloader.py` | yt-dlp wrapper, formats, retries |
-| `utils.py` | FFmpeg, browsers, cookies, network checks |
-| `pot.py` | PO Token server and Deno installer |
+| `utils.py` | Paths, FFmpeg, browsers, cookies, network checks |
+| `pot.py` | Builds and runs the PO Token server |
+| `verify_encoding.py` | Source encoding check (guards against mojibake) |
 
 ## ⚖️ Legal notice
 
