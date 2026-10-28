@@ -255,14 +255,16 @@ def _ffmpeg_checksum(release: dict, filename: str) -> str | None:
 
 def format_bytes(size: int) -> str:
     if size <= 0:
-        return "0 B"
-    units = ["B", "KB", "MB", "GB", "TB"]
+        return "0 Б"
+    units = ["Б", "КБ", "МБ", "ГБ", "ТБ"]
     i = 0
     size = float(size)
     while size >= 1024 and i < len(units) - 1:
         size /= 1024.0
         i += 1
-    return f"{size:.2f} {units[i]}"
+    if i == 0:
+        return f"{int(size)} Б"
+    return f"{size:.1f} {units[i]}"
 
 
 def format_duration(seconds) -> str:

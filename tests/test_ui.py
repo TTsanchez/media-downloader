@@ -103,11 +103,93 @@ class UITests(unittest.TestCase):
         self.app.minsize(900, 620)
         self.app.geometry("900x700")
         self.app.update()
-        for widget in (self.app.btn_download, self.app.btn_stop, self.app.progress_bar):
+        for widget in (self.app.btn_download, self.app.btn_stop, self.app.progress_bar, self.app.btn_pause):
             bottom = widget.winfo_rooty() + widget.winfo_height()
             self.assertLessEqual(bottom, self.app.winfo_rooty() + self.app.winfo_height())
         self.assertGreater(self.app.nb.winfo_height(), 100)
         self.app.withdraw()
+
+    def test_preset_selects_a_height_limited_format(self):
+        info = {"formats": [
+            {"vcodec": "avc1", "acodec": "none", "height": 1080, "filesize": 100},
+            {"vcodec": "avc1", "acodec": "none", "height": 720, "filesize": 60},
+            {"vcodec": "none", "acodec": "mp4a", "filesize": 10},
+        ]}
+        self.app._populate_formats(info)
+        self.app.preset_var.set("720p")
+        self.app._on_preset_change()
+        mode, custom, audio_only = self.app._current_mode()
+        self.assertEqual(mode, "custom")
+        self.assertEqual(custom, "bv*[height<=720]+ba/b[height<=720]")
+        self.assertFalse(audio_only)
+        self.assertEqual(self.app._estimate_size(height=720), 70)
+        self.assertIn("70", self.app.fmt_lbl.cget("text"))
+
+    def test_estimate_uses_best_video_and_audio(self):
+        info = {"formats": [
+            {"vcodec": "avc1", "acodec": "none", "height": 1080, "filesize": 100},
+            {"vcodec": "avc1", "acodec": "none", "height": 720, "filesize": 60},
+            {"vcodec": "none", "acodec": "mp4a", "filesize": 10},
+        ]}
+        self.app.format_var.set("best")
+        self.app._selected_format = None
+        self.assertEqual(self.app._estimate_size(info), 110)
+        self.app.format_var.set("bestaudio")
+        self.assertEqual(self.app._estimate_size(info), 10)
+
+    def test_queue_survives_restart_snapshot(self):
+        self.assertTrue(self.app._queue_append("https://example.com/kept"))
+        self.app.queue_items[0]["fmt_label"] = "1080p"
+        snapshot = self.app._queue_snapshot()
+        self.assertEqual(len(snapshot), 1)
+        self.assertEqual(snapshot[0]["fmt_label"], "1080p")
+        self.app.queue_items[0]["status"] = "готово"
+        self.assertEqual(self.app._queue_snapshot(), [])
+        self.app.queue_items[0]["status"] = "пауза"
+        self.app._queue_clear()
+        self.app.config[main.QUEUE_CONFIG_KEY] = snapshot
+        self.app._restore_queue()
+        self.assertEqual(len(self.app.queue_items), 1)
+        self.assertEqual(self.app.queue_items[0]["url"], "https://example.com/kept")
+        self.assertEqual(self.app.queue_items[0]["status"], "ожидание")
+
+    def test_queue_accepts_links_from_a_text_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "links.txt"
+            path.write_text("# comment\nhttps://example.com/one\nhttps://example.com/two\n", encoding="utf-8")
+            self.app._queue_add_paths([path])
+        self.assertEqual([it["url"] for it in self.app.queue_items],
+                         ["https://example.com/one", "https://example.com/two"])
+
+    def test_queue_pause_marks_unfinished_items(self):
+        self.assertTrue(self.app._queue_append("https://example.com/pause"))
+        self.app._q_running = True
+        self.app._queue_pause()
+        try:
+            self.assertTrue(self.app._q_paused)
+            self.assertEqual(self.app.queue_items[0]["status"], "пауза")
+            self.app._queue_finish()
+            self.assertEqual(str(self.app.btn_q_start.cget("text")), "Продолжить")
+        finally:
+            self.app._q_running = False
+            self.app._q_paused = False
+
+    def test_single_download_pause_offers_resume(self):
+        self.app.url_var.set("https://example.com/video")
+        self.app.is_downloading = True
+        self.app._last_download_args = {"url": "https://example.com/video"}
+        with patch.object(self.app.downloader, "stop") as stop:
+            self.app._pause_download()
+        stop.assert_called_once()
+        try:
+            self.assertTrue(self.app._paused_download)
+            self.app._finish()
+            self.assertEqual(str(self.app.btn_download.cget("text")), "Продолжить")
+            self.assertFalse(self.app.is_downloading)
+        finally:
+            self.app._paused_download = False
+            self.app._last_download_args = None
+            self.app.btn_download.configure(text="Скачать")
 
     def test_callback_error_is_logged_and_reported_inside_app(self):
         with tempfile.TemporaryDirectory() as folder:
