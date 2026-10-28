@@ -2,7 +2,8 @@
 """Сетевые операции: повторы, докачка и проверка контрольных сумм.
 
 Отдельный модуль, чтобы одинаково качать wheel-архивы, FFmpeg и обновление
-самого приложения: с Range-докачкой, ограничением времени и SHA-256.
+самого приложения: с Range-докачкой, ограничением времени, переподключением
+при медленной отдаче и SHA-256.
 """
 
 from __future__ import annotations
@@ -21,6 +22,20 @@ _CONTENT_RANGE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", re.I)
 
 class ChecksumError(RuntimeError):
     """Скачанный файл не совпал с ожидаемой контрольной суммой."""
+
+
+class SlowLink(IOError):
+    """Соединение открыто, но отдаёт данные слишком медленно."""
+
+
+# GitHub иногда отдаёт соединение по несколько килобайт в секунду, при этом
+# байты идут и обычный таймаут молчит. Такой поток пересоздаётся: новый коннект
+# часто попадает на другой узел CDN. После нескольких переподключений качаем
+# как есть, чтобы не зациклиться на честно медленной сети.
+STALL_WINDOW = 60.0
+STALL_SPEED = 50 * 1024
+STALL_RECONNECTS = 3
+CHUNK_SIZE = 1 << 16
 
 
 def session():
@@ -100,7 +115,9 @@ def download(
 
     ``progress`` получает долю от 0 до 1 с учётом уже скачанной части.
     При обрыве ``.part`` сохраняется, поэтому следующая попытка (в этом или
-    следующем запуске) продолжит с того же места.
+    следующем запуске) продолжит с того же места. Если соединение отдаёт
+    данные слишком медленно, оно пересоздаётся (тоже с докачкой): так обходится
+    троттлинг отдельных узлов CDN.
     """
     emit = log or (lambda _message: None)
     report = progress or (lambda _fraction: None)
@@ -117,7 +134,9 @@ def download(
             return destination
 
     last_error: Exception | None = None
-    for attempt in range(1, retries + 1):
+    attempt = 1
+    slow_restarts = 0
+    while attempt <= retries:
         resumed_from = partial.stat().st_size if partial.exists() else 0
         if resumed_from:
             emit(f"Продолжаю загрузку {destination.name} с {_human_size(resumed_from)}...")
@@ -148,12 +167,15 @@ def download(
                 received = 0
                 started = time.monotonic()
                 last_emit = 0.0
+                window_start = started
+                window_bytes = 0
                 with partial.open(mode) as output:
-                    for chunk in response.iter_content(1 << 20):
+                    for chunk in response.iter_content(CHUNK_SIZE):
                         if not chunk:
                             continue
                         output.write(chunk)
                         received += len(chunk)
+                        window_bytes += len(chunk)
                         done = resumed_from + received
                         if total:
                             report(min(done / total, 1.0))
@@ -169,6 +191,17 @@ def download(
                             else:
                                 detail = f"{_human_size(done)} · {_human_size(speed)}/с"
                             emit(f"Скачивание {destination.name}: {detail}")
+                        if now - window_start >= STALL_WINDOW:
+                            speed = window_bytes / (now - window_start)
+                            finished = bool(total) and done >= total
+                            if speed < STALL_SPEED and slow_restarts < STALL_RECONNECTS and not finished:
+                                slow_restarts += 1
+                                raise SlowLink(
+                                    f"соединение отдаёт данные слишком медленно "
+                                    f"({_human_size(speed)}/с)"
+                                )
+                            window_start = now
+                            window_bytes = 0
                 if total and resumed_from + received != total:
                     raise IOError(f"Получено {resumed_from + received} из {total} байт")
             if expected:
@@ -185,12 +218,19 @@ def download(
             return destination
         except ChecksumError:
             raise
+        except SlowLink as error:
+            last_error = error
+            LOGGER.warning("Download too slow, reconnecting: %s", url)
+            emit("Соединение слишком медленное — переподключаюсь...")
+            time.sleep(1)
+            continue
         except Exception as error:
             last_error = error
             if partial.exists() and partial.stat().st_size == 0:
                 partial.unlink(missing_ok=True)
             LOGGER.warning("Download attempt %s failed: %s", attempt, url, exc_info=True)
-            if attempt < retries:
+            attempt += 1
+            if attempt <= retries:
                 emit("Сбой сети, повторяю загрузку...")
                 time.sleep(2 * attempt)
     raise RuntimeError(f"Не удалось скачать {destination.name}: {last_error}")

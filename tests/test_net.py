@@ -101,6 +101,95 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), payload)
 
 
+class SequenceSession:
+    """Отдаёт заранее подготовленные ответы и запоминает заголовки запросов."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.headers = []
+        self.headers_seen = self.headers
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, _url, stream=True, timeout=None, headers=None):
+        self.headers.append(dict(headers or {}))
+        return self.responses.pop(0)
+
+
+class SlowLinkTests(unittest.TestCase):
+    def test_reconnects_and_resumes_when_speed_drops(self):
+        clock = iter([0.0, 11.0, 12.0, 13.0])
+        first = FakeResponse([b"ab"], status_code=206,
+                             headers={"Content-Range": "bytes 0-3/4"})
+        second = FakeResponse([b"cd"], status_code=206,
+                              headers={"Content-Range": "bytes 2-3/4"})
+        fake = SequenceSession([first, second])
+        messages = []
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "file.bin"
+            with patch.object(net, "session", return_value=fake), \
+                    patch.object(net, "STALL_WINDOW", 10), \
+                    patch.object(net, "STALL_SPEED", 1000), \
+                    patch.object(net.time, "sleep"), \
+                    patch.object(net.time, "monotonic", side_effect=lambda: next(clock)):
+                net.download("https://example.com/file", destination, log=messages.append)
+            self.assertEqual(destination.read_bytes(), b"abcd")
+        self.assertEqual(fake.headers[-1].get("Range"), "bytes=2-")
+        self.assertEqual(len(fake.headers), 2)
+        self.assertTrue(any("слишком медленное" in message for message in messages))
+
+    def test_keeps_slow_stream_after_reconnect_limit(self):
+        clock = iter([0.0, 11.0, 12.0])
+        response = FakeResponse([b"ab", b"cd"], headers={"Content-Length": "4"})
+        fake = SequenceSession([response])
+        messages = []
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "file.bin"
+            with patch.object(net, "session", return_value=fake), \
+                    patch.object(net, "STALL_WINDOW", 10), \
+                    patch.object(net, "STALL_SPEED", 1000), \
+                    patch.object(net, "STALL_RECONNECTS", 0), \
+                    patch.object(net.time, "sleep"), \
+                    patch.object(net.time, "monotonic", side_effect=lambda: next(clock)):
+                net.download("https://example.com/file", destination, log=messages.append)
+            self.assertEqual(destination.read_bytes(), b"abcd")
+        self.assertEqual(len(fake.headers), 1)
+        self.assertFalse(any("переподключаюсь" in message for message in messages))
+
+    def test_does_not_reconnect_when_download_is_complete(self):
+        clock = iter([0.0, 11.0])
+        response = FakeResponse([b"abcd"], headers={"Content-Length": "4"})
+        fake = SequenceSession([response])
+        messages = []
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "file.bin"
+            with patch.object(net, "session", return_value=fake), \
+                    patch.object(net, "STALL_WINDOW", 10), \
+                    patch.object(net, "STALL_SPEED", 1000), \
+                    patch.object(net.time, "sleep"), \
+                    patch.object(net.time, "monotonic", side_effect=lambda: next(clock)):
+                net.download("https://example.com/file", destination, log=messages.append)
+            self.assertEqual(destination.read_bytes(), b"abcd")
+        self.assertEqual(len(fake.headers), 1)
+        self.assertFalse(any("переподключаюсь" in message for message in messages))
+
+    def test_retries_after_network_error(self):
+        failed = FakeResponse([], status_code=500)
+        good = FakeResponse([b"data"], headers={"Content-Length": "4"})
+        fake = SequenceSession([failed, good])
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "file.bin"
+            with patch.object(net, "session", return_value=fake), \
+                    patch.object(net.time, "sleep"):
+                net.download("https://example.com/file", destination)
+            self.assertEqual(destination.read_bytes(), b"data")
+        self.assertEqual(len(fake.headers), 2)
+
+
 class ZipSafetyTests(unittest.TestCase):
     def _archive(self, folder, name):
         path = Path(folder) / "archive.zip"
