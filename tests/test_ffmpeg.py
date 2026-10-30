@@ -158,6 +158,13 @@ class ReadinessTests(unittest.TestCase):
                 self.assertTrue(components.ffmpeg_ready())
             works.assert_not_called()
 
+    def test_browser_probe_does_not_show_a_console(self):
+        result = MagicMock()
+        result.stdout = '"chrome.exe","1234","Console","1","100 000 K"\n'
+        with patch.object(utils.subprocess, "run", return_value=result) as run:
+            self.assertEqual(utils.is_browser_running(["chrome"]), ["chrome"])
+        self.assertEqual(run.call_args.kwargs["creationflags"], utils.CREATE_NO_WINDOW)
+
 
 if __name__ == "__main__":
     unittest.main()

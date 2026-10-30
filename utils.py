@@ -12,6 +12,10 @@ from diagnostics import get_diagnostics
 
 LOGGER = logging.getLogger("media_downloader.utils")
 
+# Программа собрана как GUI: своей консоли нет, поэтому любой консольный
+# процесс по умолчанию показал бы мигающее окно. Флаг скрывает его.
+CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
 
 GECKO_BROWSERS = {"firefox", "thunderbird", "librewolf", "waterfox"}
 
@@ -89,15 +93,14 @@ def detect_browsers() -> list[tuple[str, str]]:
 
 def is_browser_running(names: list[str]) -> list[str]:
     """Какие из процессов браузеров сейчас запущены."""
-    import subprocess as sp
-
     running = []
     try:
-        out = sp.run(
+        out = subprocess.run(
             ["tasklist", "/fo", "csv", "/nh"],
             capture_output=True,
             text=True,
             timeout=10,
+            creationflags=CREATE_NO_WINDOW,
         ).stdout.lower()
     except Exception:
         return running
@@ -195,7 +198,7 @@ def tool_works(path: str | Path) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=5,
-            creationflags=0x08000000 if os.name == "nt" else 0,
+            creationflags=CREATE_NO_WINDOW,
         )
     except Exception:
         return False
