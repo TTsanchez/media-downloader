@@ -117,8 +117,8 @@ python main.py
 1. **Paste a link** to a video, audio track or playlist.
 2. Click **Get info** — title, cover art, channel and duration appear.
 3. On the **Format** tab choose what to download: best quality, video only, or audio only. A **format table** lets you pick an exact resolution, codec and size; a **quality preset** (1080p, 720p, etc.) simply caps the resolution.
-4. Click **Download**. Progress and log appear at the bottom; **Pause** stops the download so it can resume from the same point.
-5. The file is saved to your download folder (**Open folder** button). A completion window offers **Open folder**; if the app is in the background, Windows shows a notification instead.
+4. Click **Download**. Progress is shown at the bottom, and the **Log** button expands the detailed log; **Pause** stops the download so it can resume from the same point.
+5. The file is saved to your download folder (**Folder** button). A completion window offers **Open folder**; if the app is in the background, Windows shows a notification instead.
 
 <div align="center">
 <img src="docs/screenshots/03-settings.png" width="49%" alt="Settings">
@@ -133,7 +133,7 @@ The **Queue** tab downloads many links at once:
 
 1. Paste links (one per line) or use **From file...** / **Paste**. You can also drop a `.txt` with links onto the app icon — the queue picks it up on launch.
 2. Pick the number of threads (1–4) and click **Add to queue**.
-3. Click **Download all** — each link shows status and percent. **Pause** stops the queue so you can continue later; **Stop** cancels it.
+3. Click **Download all** — each link shows status and percent. **Pause** stops the queue so you can continue later; **Stop** cancels it. Queue controls always sit in the bottom bar and stay visible without scrolling.
 
 The queue persists between launches: unfinished links come back the next time you open the app.
 

@@ -102,8 +102,8 @@ QUEUE_CONFIG_KEY = "queue"
 MAX_SAVED_QUEUE = 500
 HISTORY_FILE = history_store.history_file()
 HISTORY_VISIBLE = 60
-PREVIEW_SIZE = (224, 126)
-QUEUE_THUMB = (112, 63)
+PREVIEW_SIZE = (176, 99)
+QUEUE_THUMB = (96, 54)
 HISTORY_THUMB = (112, 63)
 
 # Единая палитра: фон окна, поверхность карточек, границы и акцент.
@@ -340,8 +340,8 @@ class YTApp(ttkb.Window):
         self._reset_info_panel()
 
     def _reset_info_panel(self):
-        self.title_lbl.config(text="Название не загружено")
-        self.meta_lbl.config(text="Длительность: —    Канал: —")
+        self.title_lbl.config(text="Ссылка не выбрана")
+        self.meta_lbl.config(text="")
         self._set_preview_placeholder()
 
     def _fit_to_screen(self):
@@ -468,7 +468,7 @@ class YTApp(ttkb.Window):
                         relief="flat", borderwidth=0, font=("Segoe UI Semibold", 9),
                         padding=(8, 7))
         style.map("Treeview.Heading", background=[("active", SURFACE_HOVER)])
-        style.configure("Queue.Treeview", rowheight=80)
+        style.configure("Queue.Treeview", rowheight=64)
         style.configure("TProgressbar", background=ACCENT, troughcolor=FIELD_BG,
                         bordercolor=FIELD_BG, lightcolor=ACCENT, darkcolor=ACCENT)
 
@@ -646,45 +646,18 @@ class YTApp(ttkb.Window):
 
     def _build_ui(self):
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(3, weight=1)
+        self.rowconfigure(1, weight=1)
         bg = SURFACE
-
-        header = tk.Frame(self, bg=SURFACE, height=68)
-        header.grid(row=0, column=0, sticky="ew")
-        header.grid_propagate(False)
-
-        brand = tk.Frame(header, bg=SURFACE)
-        brand.pack(side=LEFT, padx=(20, 0), pady=10)
-        self._header_icon = self._icon_photo(34)
-        if self._header_icon:
-            icon = tk.Label(brand, image=self._header_icon, bg=SURFACE, bd=0)
-            icon.pack(side=LEFT, padx=(0, 12))
-        titles = tk.Frame(brand, bg=SURFACE)
-        titles.pack(side=LEFT)
-        tk.Label(titles, text="Media Downloader", bg=SURFACE, fg=TEXT,
-                 font=("Segoe UI Semibold", 18)).pack(anchor="w")
-        tk.Label(titles, text="видео · аудио · плейлисты", bg=SURFACE, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(anchor="w", pady=(1, 0))
-
-        right = tk.Frame(header, bg=SURFACE)
-        right.pack(side=RIGHT, padx=(0, 20), pady=14)
-        self.ffmpeg_badge = ttkb.Label(right, text="FFmpeg: проверка...",
-                                       font=("Segoe UI", 8), bootstyle="warning")
-        self.ffmpeg_badge.pack(side=RIGHT)
-        tk.Label(right, text=f"v{get_app_version()}", bg=SURFACE, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(side=RIGHT, padx=(0, 14))
-
-        tk.Frame(self, bg=BORDER, height=1).grid(row=1, column=0, sticky="ew")
 
         url_box = tk.Frame(self, bg=SURFACE, highlightbackground=BORDER,
                            highlightthickness=1, bd=0)
-        url_box.grid(row=2, column=0, sticky="ew", padx=20, pady=(12, 8))
+        url_box.grid(row=0, column=0, sticky="ew", padx=20, pady=(12, 6))
         inner = tk.Frame(url_box, bg=SURFACE)
-        inner.pack(fill=X, padx=14, pady=12)
-        tk.Label(inner, text="Ссылка на видео или плейлист", bg=SURFACE, fg=MUTED,
-                 font=("Segoe UI Semibold", 9)).pack(anchor="w")
+        inner.pack(fill=X, padx=14, pady=10)
         row = tk.Frame(inner, bg=SURFACE)
-        row.pack(fill=X, pady=(7, 0))
+        row.pack(fill=X)
+        tk.Label(row, text="Ссылка", bg=SURFACE, fg=MUTED,
+                 font=("Segoe UI Semibold", 9)).pack(side=LEFT, padx=(0, 10))
         self.url_entry = ttkb.Entry(row, textvariable=self.url_var, font=("Segoe UI", 10))
         self.url_entry.pack(side=LEFT, fill=X, expand=True, ipady=4)
         self.url_entry.bind("<Return>", lambda e: self._get_info_async())
@@ -694,43 +667,32 @@ class YTApp(ttkb.Window):
         self.btn_info.pack(side=LEFT, padx=(6, 0))
 
         preview_row = tk.Frame(inner, bg=SURFACE)
-        preview_row.pack(fill=X, pady=(12, 0))
+        preview_row.pack(fill=X, pady=(10, 0))
         self.preview_box = tk.Frame(preview_row, bg=SURFACE_ALT, width=PREVIEW_SIZE[0],
                                     height=PREVIEW_SIZE[1], bd=0, highlightthickness=0)
         self.preview_box.pack(side=LEFT)
         self.preview_box.pack_propagate(False)
         self.preview_lbl = tk.Label(self.preview_box, bg=SURFACE_ALT, fg=MUTED,
-                                    text="Превью", font=("Segoe UI", 8), justify=CENTER)
+                                    text="", font=("Segoe UI", 8), justify=CENTER)
         self.preview_lbl.pack(fill=BOTH, expand=True)
 
         textbox = tk.Frame(preview_row, bg=SURFACE)
         textbox.pack(side=LEFT, fill=BOTH, expand=True, padx=(14, 0))
-        self.title_lbl = tk.Label(textbox, text="Название не загружено", bg=SURFACE,
+        self.title_lbl = tk.Label(textbox, text="Ссылка не выбрана", bg=SURFACE,
                                   fg=TEXT, font=("Segoe UI Semibold", 12), anchor="w",
-                                  justify=LEFT, wraplength=560)
+                                  justify=LEFT, wraplength=620)
         self.title_lbl.pack(anchor="w", fill=X)
-        self.meta_lbl = tk.Label(textbox, text="Длительность: —    Канал: —", bg=SURFACE,
+        self.meta_lbl = tk.Label(textbox, text="", bg=SURFACE,
                                  fg=MUTED, font=("Segoe UI", 9), anchor="w",
-                                 justify=LEFT, wraplength=560)
+                                 justify=LEFT, wraplength=620)
         self.meta_lbl.pack(anchor="w", fill=X, pady=(6, 0))
-        self.preview_hint = tk.Label(
-            textbox,
-            text="Обложка, канал и длительность появятся после получения информации.",
-            bg=SURFACE, fg=MUTED, font=("Segoe UI", 8), anchor="w",
-            justify=LEFT, wraplength=560,
-        )
-        self.preview_hint.pack(anchor="w", fill=X, pady=(6, 0))
         self._set_preview_placeholder()
 
         self.nb = nb = ttkb.Notebook(self, padding=(0, 2))
-        nb.grid(row=3, column=0, sticky="nsew", padx=20)
+        nb.grid(row=1, column=0, sticky="nsew", padx=20, pady=(6, 0))
 
-        tab_fmt = ttkb.Frame(nb)
+        tab_fmt = ttkb.Frame(nb, padding=(16, 8, 16, 8))
         nb.add(tab_fmt, text="Формат")
-        fmt_scroll = VScroll(tab_fmt, height=260, bg=bg)
-        fmt_scroll.pack(fill=BOTH, expand=True)
-        tab_fmt = ttkb.Frame(fmt_scroll.inner, padding=(16, 8, 16, 8))
-        tab_fmt.pack(fill=BOTH, expand=True)
         fbox = ttkb.LabelFrame(tab_fmt, text=" Что скачивать ", padding=(14, 8, 14, 8))
         fbox.pack(fill=X)
         self.rb_best = ttkb.Radiobutton(fbox, text="Лучшее качество — видео + аудио (MP4)", variable=self.format_var, value="best", command=self._on_mode_change)
@@ -796,12 +758,9 @@ class YTApp(ttkb.Window):
         self.fmt_lbl = ttkb.Label(tab_fmt, text="Формат не выбран — используется выбор выше.", bootstyle="secondary", font=("Segoe UI", 8), wraplength=880, justify=LEFT)
         self.fmt_lbl.pack(anchor="w", pady=(6, 0))
 
-        tab_q = ttkb.Frame(nb)
+        tab_q = ttkb.Frame(nb, padding=(16, 8, 16, 8))
         nb.add(tab_q, text="Очередь")
-        queue_scroll = VScroll(tab_q, height=260, bg=bg)
-        queue_scroll.pack(fill=BOTH, expand=True)
-        tab_q = ttkb.Frame(queue_scroll.inner, padding=(16, 8, 16, 8))
-        tab_q.pack(fill=BOTH, expand=True)
+        self._queue_tab = tab_q
 
         qin = ttkb.LabelFrame(tab_q, text=" Ссылки — по одной в строке ", padding=(12, 8, 12, 8))
         qin.pack(fill=X)
@@ -817,22 +776,16 @@ class YTApp(ttkb.Window):
         ttkb.Button(qrow, text="Вставить", width=12, bootstyle="secondary-outline", command=self._queue_paste).pack(side=LEFT, padx=(6, 0))
         ttkb.Label(qrow, text="Параллельно:", bootstyle="secondary", font=("Segoe UI", 8)).pack(side=RIGHT, padx=(0, 6))
         ttkb.Spinbox(qrow, from_=1, to=4, textvariable=self.q_parallel_var, width=4).pack(side=RIGHT)
-        ttkb.Label(
-            qin,
-            text="Совет: перетащите .txt со ссылками на значок программы — очередь пополнится при запуске.",
-            bootstyle="secondary",
-            font=("Segoe UI", 8),
-        ).pack(anchor="w", pady=(6, 0))
 
-        qlist = ttkb.LabelFrame(tab_q, text=" Очередь — превью, название и прогресс ", padding=(10, 6, 10, 6))
+        qlist = ttkb.LabelFrame(tab_q, text=" Очередь ", padding=(10, 6, 10, 6))
         qlist.pack(fill=BOTH, expand=True, pady=(6, 0))
         qcols = ("title", "fmt", "status", "progress")
         self.queue_tree = ttkb.Treeview(
             qlist, columns=qcols, show="tree headings", selectmode="extended",
-            height=4, style="Queue.Treeview",
+            height=5, style="Queue.Treeview",
         )
         self.queue_tree.heading("#0", text="Превью")
-        self.queue_tree.column("#0", width=126, stretch=False)
+        self.queue_tree.column("#0", width=110, stretch=False)
         for cid, text, w, anchor in (
             ("title", "Ссылка / название", 360, "w"),
             ("fmt", "Формат", 130, "w"),
@@ -851,17 +804,6 @@ class YTApp(ttkb.Window):
         self.queue_tree.tag_configure("paused", foreground=WARNING)
         self.queue_tree.tag_configure("odd", background="#1f252e")
         self._queue_placeholder = self._placeholder_photo(QUEUE_THUMB, radius=8)
-
-        qctrl = ttkb.Frame(tab_q)
-        qctrl.pack(fill=X, pady=(6, 0))
-        self.btn_q_start = ttkb.Button(qctrl, text="Скачать всё", width=16, bootstyle="primary", command=self._queue_start)
-        self.btn_q_start.pack(side=LEFT)
-        self.btn_q_pause = ttkb.Button(qctrl, text="Пауза", width=12, bootstyle="warning", command=self._queue_pause, state="disabled")
-        self.btn_q_pause.pack(side=LEFT, padx=(8, 0))
-        self.btn_q_stop = ttkb.Button(qctrl, text="Остановить", width=14, bootstyle="danger", command=self._queue_stop, state="disabled")
-        self.btn_q_stop.pack(side=LEFT, padx=(8, 0))
-        ttkb.Button(qctrl, text="Удалить выбранное", width=18, bootstyle="secondary-outline", command=self._queue_remove_selected).pack(side=LEFT, padx=(8, 0))
-        ttkb.Button(qctrl, text="Очистить", width=12, bootstyle="secondary-outline", command=self._queue_clear).pack(side=LEFT, padx=(8, 0))
 
         # ---------- история ----------
         tab_hist = ttkb.Frame(nb)
@@ -1128,48 +1070,100 @@ class YTApp(ttkb.Window):
             justify=LEFT,
         ).pack(anchor="w", pady=(8, 0))
 
-        pbox2 = ttkb.LabelFrame(self, text=" Прогресс ", padding=(16, 8, 16, 8))
-        pbox2.grid(row=4, column=0, sticky="ew", padx=20, pady=(8, 0))
-        self.progress_bar = ttkb.Progressbar(pbox2, orient=HORIZONTAL, mode="determinate", maximum=100, value=0)
+        progress_box = tk.Frame(self, bg=APP_BG)
+        progress_box.grid(row=2, column=0, sticky="ew", padx=20, pady=(8, 0))
+        self.progress_bar = ttkb.Progressbar(progress_box, orient=HORIZONTAL, mode="determinate", maximum=100, value=0)
         self.progress_bar.pack(fill=X)
-        irow = ttkb.Frame(pbox2)
-        irow.pack(fill=X, pady=(7, 0))
+        irow = tk.Frame(progress_box, bg=APP_BG)
+        irow.pack(fill=X, pady=(5, 0))
         self.percent_lbl = ttkb.Label(irow, text="0%", font=("Segoe UI", 9, "bold"), width=6)
         self.percent_lbl.pack(side=LEFT)
-        ttkb.Label(irow, textvariable=self.speed_var, bootstyle="secondary", font=("Segoe UI", 8)).pack(side=LEFT, padx=(10, 0))
-        ttkb.Label(irow, textvariable=self.eta_var, bootstyle="secondary", font=("Segoe UI", 8)).pack(side=LEFT, padx=(10, 0))
-        ttkb.Label(irow, textvariable=self.size_var, bootstyle="secondary", font=("Segoe UI", 8)).pack(side=LEFT, padx=(10, 0))
-        self.fname_lbl = ttkb.Label(irow, text="—", bootstyle="secondary", font=("Segoe UI", 8), wraplength=380, justify=RIGHT)
+        self.status_lbl = ttkb.Label(irow, textvariable=self.status_var, bootstyle="info", font=("Segoe UI", 8))
+        self.status_lbl.pack(side=LEFT, padx=(6, 0))
+        ttkb.Label(irow, textvariable=self.speed_var, bootstyle="secondary", font=("Segoe UI", 8)).pack(side=LEFT, padx=(14, 0))
+        ttkb.Label(irow, textvariable=self.eta_var, bootstyle="secondary", font=("Segoe UI", 8)).pack(side=LEFT, padx=(12, 0))
+        ttkb.Label(irow, textvariable=self.size_var, bootstyle="secondary", font=("Segoe UI", 8)).pack(side=LEFT, padx=(12, 0))
+        self.fname_lbl = ttkb.Label(irow, text="—", bootstyle="secondary", font=("Segoe UI", 8), wraplength=320, justify=RIGHT)
         self.fname_lbl.pack(side=RIGHT, fill=X, expand=True)
-        self.status_lbl = ttkb.Label(pbox2, textvariable=self.status_var, bootstyle="info")
-        self.status_lbl.pack(anchor="w", pady=(6, 0))
 
-        # Нижняя панель цепляется к низу окна и никогда не уезжает за экран
-        tk.Frame(self, bg=BORDER, height=1).grid(row=6, column=0, sticky="ew")
-        arow2 = tk.Frame(self, bg=SURFACE)
-        arow2.grid(row=7, column=0, sticky="ew")
-        self.btn_download = ttkb.Button(arow2, text="Скачать", width=16, bootstyle="primary", command=self._download_async)
-        self.btn_download.pack(side=LEFT, padx=(20, 0), pady=10)
-        self.btn_pause = ttkb.Button(arow2, text="Пауза", width=10, bootstyle="warning", command=self._pause_download, state="disabled")
-        self.btn_pause.pack(side=LEFT, padx=(8, 0))
-        self.btn_stop = ttkb.Button(arow2, text="Остановить", width=16, bootstyle="danger", command=self._stop_download, state="disabled")
-        self.btn_stop.pack(side=LEFT, padx=(8, 0))
-        self.btn_export_report = ttkb.Button(arow2, text="Сохранить отчёт", width=17, bootstyle="secondary-outline", command=self._export_report)
-        self.btn_export_report.pack(side=LEFT, padx=(8, 0))
-        add_tooltip(self.btn_export_report, "Сохранить ZIP с журналами ошибок и версиями компонентов для поддержки")
-        ttkb.Button(arow2, text="Папка загрузок", bootstyle="secondary-outline", command=self._open_dir).pack(side=LEFT, padx=(8, 0))
-        self.ytdlp_lbl = ttkb.Label(arow2, text="yt-dlp: ...", bootstyle="secondary", font=("Segoe UI", 8))
-        self.ytdlp_lbl.pack(side=RIGHT, padx=(10, 20))
-
-        lbox = ttkb.LabelFrame(self, text=" Журнал ", padding=(12, 8, 12, 8))
-        lbox.grid(row=5, column=0, sticky="ew", padx=20, pady=(10, 0))
-        self.log_text = tk.Text(lbox, height=3, wrap="word", font=("Consolas", 9), bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, borderwidth=0, padx=10, pady=8, relief="flat")
+        self.log_box = ttkb.LabelFrame(self, text=" Журнал ", padding=(12, 8, 12, 8))
+        self.log_box.grid(row=3, column=0, sticky="ew", padx=20, pady=(8, 0))
+        self.log_text = tk.Text(self.log_box, height=3, wrap="word", font=("Consolas", 9), bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, borderwidth=0, padx=10, pady=8, relief="flat")
         self.log_text.pack(side=LEFT, fill=BOTH, expand=True)
-        sb = ttkb.Scrollbar(lbox, orient=VERTICAL, command=self.log_text.yview)
+        sb = ttkb.Scrollbar(self.log_box, orient=VERTICAL, command=self.log_text.yview)
         sb.pack(side=RIGHT, fill=Y)
         self.log_text.configure(yscrollcommand=sb.set, state="disabled")
+        self._log_visible = False
+        self.log_box.grid_remove()
+
+        # Нижняя панель цепляется к низу окна и никогда не уезжает за экран
+        tk.Frame(self, bg=BORDER, height=1).grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        arow2 = tk.Frame(self, bg=SURFACE)
+        arow2.grid(row=5, column=0, sticky="ew")
+
+        right = tk.Frame(arow2, bg=SURFACE)
+        right.pack(side=RIGHT, padx=(8, 20), pady=10)
+        tk.Label(right, text=f"v{get_app_version()}", bg=SURFACE, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side=RIGHT, padx=(12, 0))
+        self.ffmpeg_badge = ttkb.Label(right, text="FFmpeg: проверка...",
+                                       font=("Segoe UI", 8), bootstyle="warning")
+        self.ffmpeg_badge.pack(side=RIGHT, padx=(12, 0))
+        self.ytdlp_lbl = ttkb.Label(right, text="yt-dlp: ...", bootstyle="secondary", font=("Segoe UI", 8))
+        self.ytdlp_lbl.pack(side=RIGHT, padx=(12, 0))
+        self.btn_log = ttkb.Button(right, text="Журнал", width=10,
+                                   bootstyle="secondary-outline", command=self._toggle_log)
+        self.btn_log.pack(side=RIGHT)
+
+        self.action_switch = tk.Frame(arow2, bg=SURFACE)
+        self.action_switch.pack(side=LEFT, fill=X, expand=True)
+        self.action_main = tk.Frame(self.action_switch, bg=SURFACE)
+        self.action_queue = tk.Frame(self.action_switch, bg=SURFACE)
+
+        self.btn_download = ttkb.Button(self.action_main, text="Скачать", width=14, bootstyle="primary", command=self._download_async)
+        self.btn_download.pack(side=LEFT, padx=(20, 0), pady=10)
+        self.btn_pause = ttkb.Button(self.action_main, text="Пауза", width=9, bootstyle="warning", command=self._pause_download, state="disabled")
+        self.btn_pause.pack(side=LEFT, padx=(8, 0))
+        self.btn_stop = ttkb.Button(self.action_main, text="Остановить", width=12, bootstyle="danger", command=self._stop_download, state="disabled")
+        self.btn_stop.pack(side=LEFT, padx=(8, 0))
+        ttkb.Button(self.action_main, text="Папка", width=10, bootstyle="secondary-outline", command=self._open_dir).pack(side=LEFT, padx=(8, 0))
+        self.btn_export_report = ttkb.Button(self.action_main, text="Отчёт", width=10, bootstyle="secondary-outline", command=self._export_report)
+        self.btn_export_report.pack(side=LEFT, padx=(8, 0))
+        add_tooltip(self.btn_export_report, "Сохранить ZIP с журналами ошибок и версиями компонентов для поддержки")
+
+        self.btn_q_start = ttkb.Button(self.action_queue, text="Скачать всё", width=16, bootstyle="primary", command=self._queue_start)
+        self.btn_q_start.pack(side=LEFT, padx=(20, 0), pady=10)
+        self.btn_q_pause = ttkb.Button(self.action_queue, text="Пауза", width=9, bootstyle="warning", command=self._queue_pause, state="disabled")
+        self.btn_q_pause.pack(side=LEFT, padx=(8, 0))
+        self.btn_q_stop = ttkb.Button(self.action_queue, text="Остановить", width=12, bootstyle="danger", command=self._queue_stop, state="disabled")
+        self.btn_q_stop.pack(side=LEFT, padx=(8, 0))
+        btn_remove = ttkb.Button(self.action_queue, text="Удалить", width=10, bootstyle="secondary-outline", command=self._queue_remove_selected)
+        btn_remove.pack(side=LEFT, padx=(8, 0))
+        add_tooltip(btn_remove, "Удалить выбранные ссылки из очереди")
+        ttkb.Button(self.action_queue, text="Очистить", width=10, bootstyle="secondary-outline", command=self._queue_clear).pack(side=LEFT, padx=(8, 0))
+
+        self.action_main.pack(fill=X)
 
         self._update_state()
+        self._sync_action_bar()
+
+    def _sync_action_bar(self):
+        try:
+            is_queue = self.nb.index(self.nb.select()) == self.nb.index(self._queue_tab)
+        except Exception:
+            is_queue = False
+        self.action_main.pack_forget()
+        self.action_queue.pack_forget()
+        (self.action_queue if is_queue else self.action_main).pack(fill=X)
+
+    def _toggle_log(self):
+        self._log_visible = not self._log_visible
+        if self._log_visible:
+            self.log_box.grid()
+            self.btn_log.configure(text="Скрыть")
+            self.log_text.see(tk.END)
+        else:
+            self.log_box.grid_remove()
+            self.btn_log.configure(text="Журнал")
 
     def _update_state(self):
         state = "disabled" if self.playlist_all_var.get() else "normal"
@@ -1192,24 +1186,6 @@ class YTApp(ttkb.Window):
         except Exception:
             LOGGER.debug("Could not prepare thumbnail for Tk", exc_info=True)
             return None
-
-    def _icon_photo(self, size=34):
-        key = ("icon", int(size))
-        if key in self._image_cache:
-            return self._image_cache[key]
-        photo = None
-        try:
-            from PIL import Image
-
-            path = resource_path("icon.ico")
-            if os.path.exists(path):
-                with Image.open(path) as source:
-                    image = source.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
-                photo = self._tk_photo(image)
-        except Exception:
-            LOGGER.debug("Could not load window icon", exc_info=True)
-        self._image_cache[key] = photo
-        return photo
 
     def _placeholder_photo(self, size=QUEUE_THUMB, radius=8):
         key = ("placeholder", tuple(size), int(radius))
@@ -1257,15 +1233,10 @@ class YTApp(ttkb.Window):
                 self._preview_photo = photo
                 try:
                     self.preview_lbl.configure(image=photo, text="")
-                    self.preview_hint.configure(text="Обложка загружена.")
                 except Exception:
                     LOGGER.debug("Optional operation failed: _show_preview", exc_info=True)
                 return
         if thumb_url:
-            try:
-                self.preview_hint.configure(text="Загружаю обложку…")
-            except Exception:
-                LOGGER.debug("Optional operation failed: _show_preview hint", exc_info=True)
             self._fetch_thumb("preview:" + self._preview_key, thumb_url, "preview")
 
     def _fetch_thumb(self, key, url, kind, target=None):
@@ -1300,7 +1271,6 @@ class YTApp(ttkb.Window):
                 self._preview_photo = photo
                 try:
                     self.preview_lbl.configure(image=photo, text="")
-                    self.preview_hint.configure(text="Обложка загружена.")
                 except Exception:
                     LOGGER.debug("Optional operation failed: _apply_thumb preview", exc_info=True)
         elif kind == "queue":
@@ -1349,6 +1319,7 @@ class YTApp(ttkb.Window):
         self._fetch_thumb(("queue", iid), url, "queue", iid)
 
     def _on_tab_change(self, _event=None):
+        self._sync_action_bar()
         try:
             if self.nb.index(self.nb.select()) == self.nb.index(self._history_tab):
                 if self._history_dirty:
@@ -2780,8 +2751,7 @@ class YTApp(ttkb.Window):
         self._info_loading = True
         self.btn_info.configure(state="disabled", text="Получаю информацию…")
         self.title_lbl.config(text="Загружаю информацию…")
-        self.meta_lbl.config(text="Длительность: —    Канал: —")
-        self.preview_hint.configure(text="Обложка появится после получения информации.")
+        self.meta_lbl.config(text="")
         self._populate_formats({})
         options = dict(cookies_file=self.cookies_path, cookies_from_browser=self._active_browser(),
                        proxy=self.proxy_var.get().strip() or None)

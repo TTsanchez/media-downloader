@@ -118,6 +118,50 @@ class UITests(unittest.TestCase):
         self.assertGreater(self.app.nb.winfo_height(), 100)
         self.app.withdraw()
 
+    def test_action_bar_follows_active_tab(self):
+        self.app.nb.select(self.app._queue_tab)
+        self.app.update()
+        self.assertEqual(self.app.action_queue.winfo_manager(), "pack")
+        self.assertEqual(self.app.action_main.winfo_manager(), "")
+        self.app.nb.select(0)
+        self.app.update()
+        self.assertEqual(self.app.action_main.winfo_manager(), "pack")
+        self.assertEqual(self.app.action_queue.winfo_manager(), "")
+
+    def test_log_is_hidden_by_default_and_toggles(self):
+        if self.app._log_visible:
+            self.app._toggle_log()
+        self.assertFalse(bool(self.app.log_box.grid_info()))
+        self.assertEqual(str(self.app.btn_log.cget("text")), "Журнал")
+        self.app._toggle_log()
+        try:
+            self.assertTrue(bool(self.app.log_box.grid_info()))
+            self.assertEqual(str(self.app.btn_log.cget("text")), "Скрыть")
+        finally:
+            self.app._toggle_log()
+        self.assertFalse(bool(self.app.log_box.grid_info()))
+
+    def test_info_panel_has_no_cover_hints(self):
+        self.assertFalse(hasattr(self.app, "preview_hint"))
+        self.app._reset_info_panel()
+        self.assertEqual(str(self.app.title_lbl.cget("text")), "Ссылка не выбрана")
+        self.assertEqual(str(self.app.meta_lbl.cget("text")), "")
+
+    def test_queue_actions_are_visible_without_scrolling(self):
+        self.app.deiconify()
+        self.app.geometry("1000x880")
+        self.app.nb.select(self.app._queue_tab)
+        self.app.update()
+        try:
+            window_bottom = self.app.winfo_rooty() + self.app.winfo_height()
+            for widget in (self.app.btn_q_start, self.app.btn_q_pause, self.app.btn_q_stop):
+                self.assertEqual(widget.winfo_manager(), "pack")
+                self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), window_bottom)
+            self.assertGreaterEqual(self.app.queue_tree.winfo_height(), 64 * 3)
+        finally:
+            self.app.nb.select(0)
+            self.app.withdraw()
+
     def test_preset_selects_a_height_limited_format(self):
         info = {"formats": [
             {"vcodec": "avc1", "acodec": "none", "height": 1080, "filesize": 100},
@@ -432,7 +476,9 @@ class UITests(unittest.TestCase):
             show.assert_called_once_with("Готово", "Файл сохранён")
 
     def test_preview_uses_youtube_thumbnail_guess(self):
-        with patch.object(self.app, "_fetch_thumb") as fetch:
+        with patch.object(main.thumbnails, "cached_path", return_value=None), patch.object(
+            self.app, "_fetch_thumb"
+        ) as fetch:
             self.app._show_preview("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
         self.assertEqual(self.app._preview_key, "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg")
         fetch.assert_called_once()
