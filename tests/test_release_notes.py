@@ -45,6 +45,25 @@ class ReleaseNotesTests(unittest.TestCase):
     def test_empty_version_returns_empty(self):
         self.assertEqual(release_notes.extract_notes(CHANGELOG, ""), "")
 
+    def test_body_wraps_notes_in_template(self):
+        notes = release_notes.extract_notes(CHANGELOG, "1.2.0")
+        body = release_notes.build_release_body("1.2.0", notes)
+        self.assertIn("Media Downloader", body)
+        self.assertIn("Версия 1.2.0", body)
+        self.assertIn("## Что нового", body)
+        self.assertIn("Компоненты доустанавливаются", body)
+        self.assertIn("## Установка", body)
+        self.assertIn("Media-Downloader.exe", body)
+        self.assertIn("SHA256SUMS.txt", body)
+        self.assertIn("CHANGELOG.md", body)
+        self.assertNotIn("Старое", body)
+        self.assertNotIn("## [1.1.3]", body)
+
+    def test_body_is_stable_without_version(self):
+        body = release_notes.build_release_body("", "Правки.")
+        self.assertIn("Правки.", body)
+        self.assertNotIn("Версия", body)
+
 
 if __name__ == "__main__":
     unittest.main()
