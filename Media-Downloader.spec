@@ -44,8 +44,9 @@ a = Analysis(
     optimize=0,
 )
 
-# Оставляем зависимости yt-dlp, но убираем сам пакет и плагины.
-DROP_ROOTS = {'yt_dlp', 'yt_dlp_ejs', 'yt_dlp_plugins'}
+# Оставляем зависимости yt-dlp, но убираем сам пакет, плагины и mutagen:
+# они ставятся в tools\pylibs при первом запуске, как и yt-dlp.
+DROP_ROOTS = {'yt_dlp', 'yt_dlp_ejs', 'yt_dlp_plugins', 'mutagen'}
 
 
 def _keep_module(entry):

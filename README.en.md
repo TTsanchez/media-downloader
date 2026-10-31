@@ -25,7 +25,9 @@ Media Downloader is a simple desktop app for Windows. It runs entirely locally: 
 ## ✨ Features
 
 - 🎬 **Best quality** — video + audio merged into MP4
-- 🎵 **Audio only** — mp3, m4a, opus, wav with bitrate selection
+- 🎵 **Audio only** — mp3, m4a, opus, flac, wav with bitrate selection; cover art and tags embedded
+- 🎼 **Music links** — YouTube Music, SoundCloud, Bandcamp, Mixcloud and Audiomack are saved as audio
+- 🔗 **Clean links** — a video copied from a Mix/Radio downloads alone, not the whole playlist
 - 📼 **Video only** — no sound track
 - 📚 **Playlists** — full or by index range
 - 🎯 **Format table** — pick the exact resolution, codec, FPS and size

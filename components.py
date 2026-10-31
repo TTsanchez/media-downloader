@@ -21,7 +21,17 @@ import net
 
 LOGGER = logging.getLogger("media_downloader.components")
 
-PYPI_PACKAGES = ("yt-dlp", "yt-dlp-ejs", "bgutil-ytdlp-pot-provider")
+# mutagen нужен yt-dlp, чтобы вкладывать обложку и теги в mp3, m4a, flac и opus.
+# Без него файл скачивается, но остаётся без обложки, поэтому пакет ставится
+# вместе с движком, а при обновлении — доустанавливается отдельно.
+PYPI_PACKAGES = ("yt-dlp", "yt-dlp-ejs", "bgutil-ytdlp-pot-provider", "mutagen")
+
+_PACKAGE_MODULES = {
+    "yt-dlp": "yt_dlp",
+    "yt-dlp-ejs": "yt_dlp_ejs",
+    "bgutil-ytdlp-pot-provider": "yt_dlp_plugins.extractor.getpot_bgutil_http",
+    "mutagen": "mutagen",
+}
 
 
 def _utils():
@@ -75,6 +85,11 @@ def ytdlp_ready() -> bool:
         and _importable("yt_dlp_ejs")
         and _importable("yt_dlp_plugins.extractor.getpot_bgutil_http")
     )
+
+
+def embed_ready() -> bool:
+    """Есть ли mutagen: без него обложка не встраивается в аудиофайлы."""
+    return _importable("mutagen")
 
 
 def installed_ytdlp_version() -> str:
@@ -141,6 +156,7 @@ def component_status() -> dict:
     utils = _utils()
     return {
         "ytdlp": {"ready": ytdlp_ready(), "version": installed_ytdlp_version()},
+        "embed": {"ready": embed_ready()},
         "ffmpeg": {"ready": ffmpeg_ready(), "path": utils.find_ffmpeg() or ""},
         "deno": {"ready": deno_ready(), "path": pot.find_deno() or ""},
         "node": {"ready": node_ready(), "path": pot.find_node() or ""},
@@ -246,17 +262,22 @@ def _install_wheel(archive: Path) -> None:
 
 
 def install_ytdlp(force: bool = False, log=None, progress=None) -> str:
-    """Ставит (или обновляет) yt-dlp, yt-dlp-ejs и bgutil-плагин."""
+    """Ставит (или обновляет) yt-dlp, yt-dlp-ejs, bgutil-плагин и mutagen."""
     emit = _emit(log)
     report = _report(progress)
     current = installed_ytdlp_version()
-    if not force and ytdlp_ready():
+    if force:
+        pending = list(PYPI_PACKAGES)
+    else:
+        pending = [package for package in PYPI_PACKAGES
+                   if not _importable(_PACKAGE_MODULES[package])]
+    if not pending:
         emit(f"yt-dlp уже установлен ({current or 'готов'})")
         report(1.0)
         return current
 
     selected = []
-    for package in PYPI_PACKAGES:
+    for package in pending:
         version, url, digest = _pypi_wheel(package)
         selected.append((package, version, url, digest))
 

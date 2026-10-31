@@ -71,6 +71,7 @@ from utils import (
     browser_reads_ok,
     check_cookies_file,
     check_youtube_network,
+    clean_media_url,
     data_root,
     detect_browsers,
     find_ffmpeg,
@@ -84,6 +85,7 @@ from utils import (
     get_latest_app_release,
     get_latest_pypi_version,
     is_browser_running,
+    is_music_url,
     is_newer_app_version,
     is_newer_version,
     looks_like_url,
@@ -495,6 +497,8 @@ class YTApp(ttkb.Window):
                 "audio_quality": self.audio_quality_var.get(),
                 "restrict_filenames": self.restrict_names_var.get(),
                 "skip_downloaded": self.skip_downloaded_var.get(),
+                "embed_media": bool(self.embed_media_var.get()),
+                "auto_audio": bool(self.auto_audio_var.get()),
                 "notifications": bool(self.notify_var.get()),
                 "archive_file": self.archive_var.get().strip(),
                 "browser": self._active_browser() or "без cookies",
@@ -515,6 +519,8 @@ class YTApp(ttkb.Window):
         self.audio_quality_var.set(self.config.get("audio_quality", "192"))
         self.restrict_names_var.set(self.config.get("restrict_filenames", True))
         self.skip_downloaded_var.set(bool(self.config.get("skip_downloaded", False)))
+        self.embed_media_var.set(bool(self.config.get("embed_media", True)))
+        self.auto_audio_var.set(bool(self.config.get("auto_audio", True)))
         self.notify_var.set(bool(self.config.get("notifications", True)))
         self.archive_var.set(self.config.get("archive_file") or str(DEFAULT_ARCHIVE_FILE))
         self._saved_browser = self.config.get("browser", "без cookies")
@@ -551,6 +557,7 @@ class YTApp(ttkb.Window):
                 "start": item.get("start", 1),
                 "end": item.get("end", 0),
                 "fmt_label": item.get("fmt_label", ""),
+                "embed_media": bool(item.get("embed_media", True)),
             })
         return snapshot
 
@@ -565,7 +572,7 @@ class YTApp(ttkb.Window):
                 continue
             if restored >= MAX_SAVED_QUEUE:
                 break
-            url = str(entry.get("url") or "").strip()
+            url = clean_media_url(str(entry.get("url") or "").strip())
             if not looks_like_url(url) or any(it["url"] == url for it in self.queue_items):
                 continue
             try:
@@ -588,6 +595,7 @@ class YTApp(ttkb.Window):
                 "start": max(1, start),
                 "end": max(0, end),
                 "fmt_label": str(entry.get("fmt_label") or "Лучшее"),
+                "embed_media": bool(entry.get("embed_media", True)),
             })
             restored += 1
         if restored:
@@ -602,6 +610,8 @@ class YTApp(ttkb.Window):
         self.audio_quality_var = v(value="192")
         self.restrict_names_var = tk.BooleanVar(value=True)
         self.skip_downloaded_var = tk.BooleanVar(value=False)
+        self.embed_media_var = tk.BooleanVar(value=True)
+        self.auto_audio_var = tk.BooleanVar(value=True)
         self.notify_var = tk.BooleanVar(value=True)
         self.archive_var = v(value=str(DEFAULT_ARCHIVE_FILE))
         self.browser_var = v(value="без cookies")
@@ -723,7 +733,7 @@ class YTApp(ttkb.Window):
         arow = ttkb.Frame(self.audio_box)
         arow.pack(fill=X)
         ttkb.Label(arow, text="Формат:", width=10).pack(side=LEFT)
-        self.cmb_af = ttkb.Combobox(arow, values=["mp3", "m4a", "opus", "wav"], textvariable=self.audio_format_var, state="readonly", width=10)
+        self.cmb_af = ttkb.Combobox(arow, values=["mp3", "m4a", "opus", "flac", "wav"], textvariable=self.audio_format_var, state="readonly", width=10)
         self.cmb_af.pack(side=LEFT, padx=(5, 0))
         self.cmb_af.bind("<<ComboboxSelected>>", lambda e: self._update_state())
         ttkb.Label(arow, text="Битрейт:", width=12).pack(side=LEFT, padx=(18, 0))
@@ -731,7 +741,7 @@ class YTApp(ttkb.Window):
         self.cmb_aq.pack(side=LEFT, padx=(5, 0))
         self.cmb_aq.bind("<<ComboboxSelected>>", lambda e: self._save_config())
         ttkb.Label(arow, text="kbps", bootstyle="secondary", font=("Segoe UI", 8)).pack(side=LEFT, padx=(6, 0))
-        ttkb.Label(self.audio_box, text="mp3 — универсальный · m4a — Apple · opus — лучшее сжатие · wav — без потерь", bootstyle="secondary", font=("Segoe UI", 8)).pack(
+        ttkb.Label(self.audio_box, text="mp3 — универсальный · m4a — Apple · opus — лучшее сжатие · flac — без потерь · wav — без сжатия", bootstyle="secondary", font=("Segoe UI", 8)).pack(
             anchor="w", pady=(6, 0)
         )
 
@@ -875,6 +885,33 @@ class YTApp(ttkb.Window):
             command=self._save_config,
         ).pack(anchor="w")
 
+        meta = ttkb.LabelFrame(tab_set, text="Обложка, теги и музыкальные ссылки", padding=(14, 10, 14, 10))
+        meta.pack(fill=X, pady=(10, 0))
+        ttkb.Checkbutton(
+            meta,
+            text="Встраивать обложку и теги в скачанные файлы",
+            variable=self.embed_media_var,
+            command=self._save_config,
+        ).pack(anchor="w")
+        ttkb.Checkbutton(
+            meta,
+            text="Ссылки на музыкальные сервисы скачивать как аудио",
+            variable=self.auto_audio_var,
+            command=self._save_config,
+        ).pack(anchor="w", pady=(4, 0))
+        ttkb.Label(
+            meta,
+            text=(
+                "Обложка берётся с сайта и вкладывается в MP3, FLAC, M4A и MP4. "
+                "Если встроить её не удалось, файл сохранится без обложки — загрузка не прервётся.\n"
+                "Музыкальные сервисы: YouTube Music, SoundCloud, Bandcamp, Mixcloud, Audiomack."
+            ),
+            bootstyle="secondary",
+            font=("Segoe UI", 8),
+            wraplength=820,
+            justify=LEFT,
+        ).pack(anchor="w", pady=(8, 0))
+
         mbox = ttkb.LabelFrame(tab_set, text="Уведомления и превью", padding=(14, 10, 14, 10))
         mbox.pack(fill=X, pady=(10, 0))
         ttkb.Checkbutton(
@@ -975,6 +1012,7 @@ class YTApp(ttkb.Window):
         for key, title in (
             ("ytdlp", "yt-dlp"),
             ("ffmpeg", "FFmpeg"),
+            ("embed", "Обложки"),
             ("deno", "Deno"),
             ("node", "Node.js"),
             ("git", "Git"),
@@ -1171,7 +1209,7 @@ class YTApp(ttkb.Window):
         self.sp_end.configure(state=state)
         audio = self.format_var.get() == "bestaudio" and not self._selected_format
         self.cmb_af.configure(state="readonly" if audio else "disabled")
-        self.cmb_aq.configure(state="readonly" if audio and self.audio_format_var.get() != "wav" else "disabled")
+        self.cmb_aq.configure(state="readonly" if audio and self.audio_format_var.get() not in ("wav", "flac") else "disabled")
         self._save_config()
 
     # ---------- превью, история и уведомления ----------
@@ -1556,6 +1594,19 @@ class YTApp(ttkb.Window):
         mode = {"best": "best", "bestvideo": "video", "bestaudio": "audio"}.get(self.format_var.get(), "best")
         return mode, None, False
 
+    def _mode_for_url(self, url: str):
+        """Учитывает автоматический аудиорежим для музыкальных ссылок.
+
+        Явный выбор формата из таблицы всегда важнее автоматики: если человек
+        выбрал строку, качаем именно её.
+        """
+        mode, custom_format, audio_only = self._current_mode()
+        if custom_format or not self.auto_audio_var.get():
+            return mode, custom_format, audio_only
+        if mode != "audio" and is_music_url(url):
+            return "audio", None, False
+        return mode, custom_format, audio_only
+
     @staticmethod
     def _pick_format_source(info: dict) -> dict | None:
         if info.get("entries"):
@@ -1809,6 +1860,7 @@ class YTApp(ttkb.Window):
         if self._q_running:
             self._log("Сначала дождитесь завершения очереди или остановите её.")
             return False
+        url = clean_media_url(url)
         if not looks_like_url(url):
             self._log(f"Пропущена некорректная ссылка: {url[:90]}")
             return False
@@ -1820,7 +1872,7 @@ class YTApp(ttkb.Window):
         except ValueError as e:
             messagebox.showwarning("Диапазон плейлиста", str(e))
             return False
-        mode, custom_format, audio_only = self._current_mode()
+        mode, custom_format, audio_only = self._mode_for_url(url)
         if custom_format:
             label = self._selected_label or "формат"
         else:
@@ -1840,6 +1892,7 @@ class YTApp(ttkb.Window):
             "start": start,
             "end": end,
             "fmt_label": label,
+            "embed_media": bool(self.embed_media_var.get()),
         })
 
     def _queue_update_row(self, item: dict):
@@ -2013,6 +2066,7 @@ class YTApp(ttkb.Window):
                 audio_quality=item["audio_quality"],
                 playlist_start=item["start"],
                 playlist_end=item["end"],
+                embed_media=bool(item.get("embed_media", True)),
                 **item["options"],
             )
             prog = dl.progress
@@ -2204,6 +2258,7 @@ class YTApp(ttkb.Window):
             self._log("Буфер обмена пуст")
             return
         if text:
+            text = clean_media_url(text)
             self.url_var.set(text)
             self._log(f"Ссылка вставлена: {text[:70]}")
 
@@ -2281,6 +2336,7 @@ class YTApp(ttkb.Window):
         if not text or text == self._last_clip:
             return
         self._last_clip = text
+        text = clean_media_url(text)
         if self.url_var.get().strip() or not looks_like_url(text):
             return
         self.url_var.set(text)
@@ -2609,6 +2665,11 @@ class YTApp(ttkb.Window):
         else:
             self._component_label("ffmpeg", "не установлен — нажмите «Восстановить FFmpeg»", "danger")
 
+        if (status.get("embed") or {}).get("ready"):
+            self._component_label("embed", "готовы — обложка и теги встраиваются в файлы", "success")
+        else:
+            self._component_label("embed", "не установлены — нажмите «Установить всё»", "warning")
+
         for key, hint in (
             ("deno", "нужен для JavaScript-проверок YouTube"),
             ("node", "нужен для PO Token"),
@@ -2741,10 +2802,12 @@ class YTApp(ttkb.Window):
     def _get_info_async(self):
         if self._info_loading or self._updating:
             return
-        url = self.url_var.get().strip()
+        url = clean_media_url(self.url_var.get().strip())
         if not looks_like_url(url):
             messagebox.showwarning("Ссылка", "Вставьте корректную ссылку на видео или плейлист.")
             return
+        if url != self.url_var.get().strip():
+            self.url_var.set(url)
         if not self._check_browsers_before_download():
             return
         self._refresh_browser_status()
@@ -2897,10 +2960,13 @@ class YTApp(ttkb.Window):
                 return
         if self.is_downloading or self._updating or self._info_loading:
             return
-        url = self.url_var.get().strip()
+        url = clean_media_url(self.url_var.get().strip())
         if not looks_like_url(url):
             messagebox.showwarning("Ссылка", "Вставьте корректную ссылку на видео или плейлист.")
             return
+        if url != self.url_var.get().strip():
+            self.url_var.set(url)
+            self._log(f"Ссылка очищена от параметров плейлиста: {url[:90]}")
         try:
             start, end = self._playlist_range()
         except ValueError as e:
@@ -2930,7 +2996,9 @@ class YTApp(ttkb.Window):
         self.status_var.set("Подготовка...")
         self._log(f"Старт загрузки в {out_dir}")
 
-        mode, custom_format, custom_audio_only = self._current_mode()
+        mode, custom_format, custom_audio_only = self._mode_for_url(url)
+        if mode == "audio" and self.format_var.get() != "bestaudio" and not self._selected_format:
+            self._log("Музыкальная ссылка — сохраняю только аудио")
         self._active_fmt_label = (
             self._selected_label
             or {"best": "Лучшее", "video": "Видео", "audio": "Аудио"}.get(mode, mode)
@@ -2950,6 +3018,7 @@ class YTApp(ttkb.Window):
             proxy=self.proxy_var.get().strip() or None,
             restrict_filenames=self.restrict_names_var.get(),
             download_archive=self.archive_var.get().strip() if self.skip_downloaded_var.get() else None,
+            embed_media=bool(self.embed_media_var.get()),
         )
         self._last_download_args = dict(args)
         threading.Thread(target=self._worker, args=(args,), daemon=True).start()

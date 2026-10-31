@@ -11,6 +11,47 @@ import pot
 import utils
 
 
+class UrlCleaningTests(unittest.TestCase):
+    def test_mix_radio_is_reduced_to_single_video(self):
+        url = "https://www.youtube.com/watch?v=abc123&list=RDabc123&index=2&start_radio=1"
+        self.assertEqual(utils.clean_media_url(url), "https://www.youtube.com/watch?v=abc123")
+
+    def test_explicit_playlist_is_kept(self):
+        cleaned = utils.clean_media_url("https://www.youtube.com/watch?v=abc123&list=PLxyz&index=4")
+        self.assertIn("list=PLxyz", cleaned)
+        self.assertNotIn("index=", cleaned)
+
+    def test_playlist_url_is_untouched(self):
+        url = "https://www.youtube.com/playlist?list=PLxyz"
+        self.assertEqual(utils.clean_media_url(url), url)
+
+    def test_short_link_mix_is_cleaned(self):
+        self.assertEqual(
+            utils.clean_media_url("https://youtu.be/abc123?list=RDabc123"),
+            "https://youtu.be/abc123",
+        )
+
+    def test_trailing_punctuation_and_tiktok_tracking(self):
+        self.assertEqual(utils.clean_media_url("https://youtu.be/abc123)."), "https://youtu.be/abc123")
+        self.assertEqual(
+            utils.clean_media_url("https://www.tiktok.com/@a/video/123?is_from_webapp=1"),
+            "https://www.tiktok.com/@a/video/123",
+        )
+
+    def test_music_domains(self):
+        for url in (
+            "https://music.youtube.com/watch?v=abc123",
+            "https://soundcloud.com/artist/track",
+            "https://artist.bandcamp.com/track/song",
+            "https://www.mixcloud.com/artist/show",
+            "https://audiomack.com/artist/song",
+        ):
+            self.assertTrue(utils.is_music_url(url), url)
+        self.assertFalse(utils.is_music_url("https://www.youtube.com/watch?v=abc123"))
+        self.assertFalse(utils.is_music_url("https://soundcloud.com.evil.example/track"))
+
+
+
 class DownloadTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -103,6 +144,63 @@ class DownloadTests(unittest.TestCase):
             downloader.CLIENT_FALLBACKS.index(["visionos"]),
             downloader.CLIENT_FALLBACKS.index(["web"]),
         )
+
+    def test_mix_link_is_cleaned_before_download(self):
+        dl = downloader.MediaDownloader()
+        dl.download(
+            "https://www.youtube.com/watch?v=abc123&list=RDabc123&start_radio=1",
+            self.output,
+        )
+        self.assertEqual(dl._url, "https://www.youtube.com/watch?v=abc123")
+
+    def test_audio_flac_uses_lossless_codec(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video", self.output, mode="audio", audio_format="flac"
+        )
+        postprocessors = self.ydl.call_args.args[0]["postprocessors"]
+        extract = next(pp for pp in postprocessors if pp["key"] == "FFmpegExtractAudio")
+        self.assertEqual(extract["preferredcodec"], "flac")
+        self.assertNotIn("preferredquality", extract)
+
+    def test_audio_embeds_cover_and_tags(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video", self.output, mode="audio", audio_format="mp3"
+        )
+        opts = self.ydl.call_args.args[0]
+        keys = [pp["key"] for pp in opts["postprocessors"]]
+        self.assertTrue(opts["writethumbnail"])
+        self.assertIn("FFmpegThumbnailsConvertor", keys)
+        self.assertIn("EmbedThumbnail", keys)
+        self.assertIn("FFmpegMetadata", keys)
+
+    def test_video_embeds_cover_and_tags(self):
+        downloader.MediaDownloader().download("https://example.com/video", self.output)
+        opts = self.ydl.call_args.args[0]
+        keys = [pp["key"] for pp in opts["postprocessors"]]
+        self.assertTrue(opts["writethumbnail"])
+        self.assertIn("EmbedThumbnail", keys)
+        self.assertIn("FFmpegMetadata", keys)
+
+    def test_embedding_can_be_disabled(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video", self.output, embed_media=False
+        )
+        opts = self.ydl.call_args.args[0]
+        self.assertNotIn("writethumbnail", opts)
+        self.assertNotIn("postprocessors", opts)
+
+    def test_thumbnail_failure_retries_without_embedding(self):
+        failure = downloader.DownloadError("ERROR: Postprocessing: Error embedding thumbnail")
+        success = MagicMock()
+        success.__enter__.return_value.download.return_value = 0
+        self.ydl.side_effect = [failure, success]
+        dl = downloader.MediaDownloader()
+        dl.download("https://example.com/video", self.output)
+        self.assertEqual(self.ydl.call_count, 2)
+        first, second = self.ydl.call_args_list[0].args[0], self.ydl.call_args_list[1].args[0]
+        self.assertTrue(first["writethumbnail"])
+        self.assertNotIn("writethumbnail", second)
+        self.assertEqual(dl.progress.status, "done")
 
 
 class UpdateTests(unittest.TestCase):

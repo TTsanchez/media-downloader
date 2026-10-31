@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Optional
 
@@ -440,6 +441,79 @@ def check_youtube_network(timeout: float = 8.0) -> dict:
             "Похоже на общий сбой канала или блокировку шифрованного трафика."
         ),
     }
+
+
+MUSIC_DOMAINS = (
+    "music.youtube.com",
+    "soundcloud.com",
+    "bandcamp.com",
+    "mixcloud.com",
+    "audiomack.com",
+)
+
+
+def clean_media_url(url: str) -> str:
+    """Убирает из ссылки параметры, из-за которых скачивается лишнее.
+
+    Ссылку на ролик часто копируют вместе с ``list=RD...`` — это автоматический
+    Mix/Radio YouTube, и yt-dlp воспринимает такую ссылку как плейлист.
+    Явные плейлисты (``list=PL...``, ``list=OLAK...``) не трогаем: их могли
+    скопировать намеренно. Заодно срезаются хвосты вроде запятой или точки,
+    которые попадают в буфер вместе со ссылкой.
+    """
+    text = (url or "").strip()
+    if not text:
+        return ""
+    text = text.rstrip("),.;!\"'>]")
+
+    lower = text.lower()
+    if "tiktok.com" in lower and ("/video/" in lower or "/photo/" in lower):
+        return text.split("?", 1)[0]
+
+    try:
+        parsed = urllib.parse.urlparse(text)
+        if not parsed.netloc:
+            parsed = urllib.parse.urlparse("https://" + text)
+            prefixed = True
+        else:
+            prefixed = False
+    except ValueError:
+        return text
+
+    host = parsed.netloc.lower()
+    if not (host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")):
+        return text
+
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    is_watch = host == "youtu.be" or "/watch" in parsed.path
+    if not is_watch:
+        return text
+
+    lists = query.get("list") or []
+    auto_mix = "start_radio" in query or any(str(value).upper().startswith("RD") for value in lists)
+    changed = False
+    for key in ("list", "index", "start_radio", "rv"):
+        if key in query and (key != "list" or auto_mix):
+            query.pop(key, None)
+            changed = True
+    if not changed:
+        return text
+
+    cleaned = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
+    if prefixed:
+        cleaned = cleaned.split("://", 1)[1]
+    return cleaned
+
+
+def is_music_url(url: str) -> bool:
+    """Ссылка ведёт на музыкальный сервис, а не на видео."""
+    try:
+        host = urllib.parse.urlparse((url or "").strip()).netloc.lower()
+    except ValueError:
+        return False
+    if host.startswith("www."):
+        host = host[4:]
+    return any(host == domain or host.endswith("." + domain) for domain in MUSIC_DOMAINS)
 
 
 def looks_like_url(text: str) -> bool:

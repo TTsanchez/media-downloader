@@ -23,6 +23,7 @@ from pathlib import Path
 from components import (
     component_status,
     deno_ready,
+    embed_ready,
     ffmpeg_ready,
     git_ready,
     install_deno,
@@ -71,11 +72,25 @@ def missing_minimum() -> list[str]:
     return missing
 
 
+def _embed_support_task(emit):
+    """Доустанавливает mutagen, не прерывая запуск при ошибке."""
+    def action(stage):
+        try:
+            install_ytdlp(log=emit, progress=stage)
+        except Exception as error:
+            LOGGER.warning("Could not install cover support: %s", error, exc_info=True)
+            emit("Не удалось установить поддержку обложек — файлы сохранятся без них")
+            stage(1.0)
+    return action
+
+
 def ensure_minimum(log=None, progress=None) -> list[str]:
     """Ставит только то, без чего нельзя скачивать: yt-dlp и FFmpeg.
 
     Компоненты скачиваются параллельно, чтобы первый запуск не ждал
-    последовательно два больших архива.
+    последовательно два больших архива. Если движок уже стоит, но нет
+    mutagen, доустанавливается только поддержка обложек: её отсутствие
+    не мешает загрузке, поэтому ошибка здесь не считается критической.
     """
     emit = _emit(log)
     report = _report(progress)
@@ -83,6 +98,8 @@ def ensure_minimum(log=None, progress=None) -> list[str]:
     tasks = []
     if not ytdlp_ready():
         tasks.append(("yt-dlp", 30, lambda stage: install_ytdlp(log=emit, progress=stage)))
+    elif not embed_ready():
+        tasks.append(("обложки", 5, _embed_support_task(emit)))
     if not ffmpeg_ready():
         tasks.append(("ffmpeg", 70, lambda stage: install_ffmpeg(log=emit, progress=stage)))
     if not tasks:
@@ -296,7 +313,7 @@ def startup(log=None) -> bool:
     """
     prepare_imports()
     missing = missing_minimum()
-    if not missing:
+    if not missing and embed_ready():
         return True
 
     emit = _emit(log)

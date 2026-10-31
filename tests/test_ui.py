@@ -77,6 +77,27 @@ class UITests(unittest.TestCase):
         self.assertFalse(self.app._queue_append("https://example.com/video"))
         self.assertEqual(len(self.app.queue_items), 1)
 
+    def test_queue_cleans_mix_link_and_switches_to_audio(self):
+        self.app.format_var.set("best")
+        self.app.auto_audio_var.set(True)
+        self.assertTrue(
+            self.app._queue_append(
+                "https://music.youtube.com/watch?v=abc123&list=RDAMVMabc123&start_radio=1"
+            )
+        )
+        item = self.app.queue_items[-1]
+        self.assertEqual(item["url"], "https://music.youtube.com/watch?v=abc123")
+        self.assertEqual(item["mode"], "audio")
+        self.assertEqual(item["fmt_label"], "Аудио")
+
+    def test_queue_keeps_explicit_playlist_links(self):
+        self.app.format_var.set("best")
+        self.app.auto_audio_var.set(True)
+        self.assertTrue(
+            self.app._queue_append("https://www.youtube.com/playlist?list=PLxyz")
+        )
+        self.assertEqual(self.app.queue_items[-1]["mode"], "best")
+
     def test_late_progress_does_not_overwrite_final_status(self):
         self.app._queue_append("https://example.com/video")
         item = self.app.queue_items[0]

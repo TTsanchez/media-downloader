@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
 
-from utils import find_ffmpeg
+from utils import clean_media_url, find_ffmpeg
 from pot import find_deno, server_running, start_server
 from diagnostics import register_cookie_secrets, register_secret, report_exception
 
@@ -158,6 +158,7 @@ class MediaDownloader:
         proxy: str | None = None,
     ) -> Dict[str, Any]:
         register_cookie_secrets(cookies_file)
+        url = clean_media_url(url)
         self.logger.info("Extract info started: url=%s cookies_file=%s browser=%s proxy_enabled=%s",
                          url, bool(cookies_file), cookies_from_browser, bool(proxy))
         base_opts: Dict[str, Any] = {
@@ -245,12 +246,15 @@ class MediaDownloader:
         proxy: str | None = None,
         restrict_filenames: bool = True,
         download_archive: str | None = None,
+        embed_media: bool = True,
     ):
         register_cookie_secrets(cookies_file)
+        url = clean_media_url(url)
         self.logger.info("Download started: url=%s mode=%s format=%s audio=%s quality=%s playlist=%s:%s "
-                         "cookies_file=%s browser=%s proxy_enabled=%s archive_enabled=%s output=%s",
+                         "cookies_file=%s browser=%s proxy_enabled=%s archive_enabled=%s embed_media=%s output=%s",
                          url, mode, custom_format, audio_format, audio_quality, playlist_start, playlist_end,
-                         bool(cookies_file), cookies_from_browser, bool(proxy), bool(download_archive), output_dir)
+                         bool(cookies_file), cookies_from_browser, bool(proxy), bool(download_archive),
+                         bool(embed_media), output_dir)
         self.progress = DownloadProgress()
         self._url = url
         self.progress.status = "extracting"
@@ -315,11 +319,17 @@ class MediaDownloader:
 
         if mode == "audio":
             opts["format"] = "ba/best"
-            codec = audio_format if audio_format in ("mp3", "m4a", "opus", "wav") else "mp3"
+            codec = audio_format if audio_format in ("mp3", "m4a", "opus", "wav", "flac") else "mp3"
             pp = {"key": "FFmpegExtractAudio", "preferredcodec": codec}
-            if codec != "wav":
+            if codec not in ("wav", "flac"):
                 pp["preferredquality"] = audio_quality
             opts["postprocessors"] = [pp, {"key": "FFmpegMetadata"}]
+            if embed_media:
+                # Сначала приводим обложку к JPEG (иначе WebP не встроить),
+                # затем вкладываем её в файл и только потом пишем теги.
+                opts["writethumbnail"] = True
+                opts["postprocessors"].insert(1, {"key": "FFmpegThumbnailsConvertor", "format": "jpg"})
+                opts["postprocessors"].insert(2, {"key": "EmbedThumbnail"})
         elif mode == "video":
             # Только видео, без звуковой дорожки
             opts["format"] = "bv"
@@ -327,6 +337,18 @@ class MediaDownloader:
             opts["format"] = custom_format or "bv*+ba/b"
         else:
             opts["format"] = "bv*+ba/b"
+
+        # Обложку и теги встраиваем только в предсказуемый контейнер: MP4 для
+        # видео и аудиоформаты после конвертации. Для произвольного формата из
+        # таблицы контейнер неизвестен, поэтому не рискуем повторной загрузкой.
+        embed_video = mode in ("best", "video") or (mode == "custom" and "+" in (custom_format or ""))
+        if embed_media and mode != "audio" and embed_video:
+            opts["writethumbnail"] = True
+            opts["postprocessors"] = [
+                {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
+                {"key": "EmbedThumbnail"},
+                {"key": "FFmpegMetadata"},
+            ]
 
         # Объединяем в mp4 только когда в результате есть видео и аудио.
         if mode == "best" or (mode == "custom" and not custom_audio_only):
@@ -341,6 +363,22 @@ class MediaDownloader:
 
         last_error = ""
 
+        def run(run_opts: Dict[str, Any]) -> None:
+            with YoutubeDL(run_opts) as ydl:
+                self._ydl = ydl
+                result = ydl.download([url])
+            if result:
+                raise RuntimeError("Не все файлы удалось скачать. Проверьте доступность видео в плейлисте.")
+
+        def without_embedding(run_opts: Dict[str, Any]) -> Dict[str, Any]:
+            plain = dict(run_opts)
+            plain.pop("writethumbnail", None)
+            plain["postprocessors"] = [
+                pp for pp in plain.get("postprocessors", [])
+                if pp.get("key") not in ("EmbedThumbnail", "FFmpegThumbnailsConvertor")
+            ]
+            return plain
+
         try:
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 if self._stop_event.is_set():
@@ -352,12 +390,39 @@ class MediaDownloader:
                 ensure_pot_server()
                 attempt_opts.update(build_runtime_opts(clients=CLIENT_FALLBACKS[attempt - 1], proxy=proxy))
 
-                try:
-                    with YoutubeDL(attempt_opts) as ydl:
-                        self._ydl = ydl
-                        result = ydl.download([url])
-                        if result:
-                            raise RuntimeError("Не все файлы удалось скачать. Проверьте доступность видео в плейлисте.")
+                # Если обложку встроить не удалось (неподдерживаемый контейнер,
+                # битый JPEG), повторяем без неё: сам файл важнее картинки.
+                variants = [attempt_opts]
+                if attempt_opts.get("writethumbnail"):
+                    variants.append(without_embedding(attempt_opts))
+
+                attempt_error = ""
+                for index, run_opts in enumerate(variants):
+                    try:
+                        run(run_opts)
+                        attempt_error = ""
+                        break
+                    except (DownloadError, ExtractorError) as e:
+                        if "cancel" in str(e).lower() or self._stop_event.is_set():
+                            self.progress.status = "cancelled"
+                            return
+                        attempt_error = self._clean_error(str(e)) or "Ошибка загрузки"
+                        self.logger.warning("Download attempt failed", exc_info=True)
+                    except Exception as e:
+                        if self._stop_event.is_set():
+                            self.progress.status = "cancelled"
+                            return
+                        attempt_error = self._clean_error(str(e)) or "Неизвестная ошибка"
+                        self.logger.warning("Download attempt failed unexpectedly", exc_info=True)
+
+                    if index + 1 < len(variants) and self._embedding_failed(attempt_error):
+                        self.logger.info("Cover art embedding failed, retrying without it")
+                        self.progress.retry_message = "Не удалось встроить обложку, сохраняю файл без неё..."
+                        self._emit()
+                        continue
+                    break
+
+                if not attempt_error:
                     if self._stop_event.is_set():
                         self.progress.status = "cancelled"
                     else:
@@ -366,19 +431,8 @@ class MediaDownloader:
                         self.progress.retry_message = ""
                         self.progress.error = ""
                     return
-                except (DownloadError, ExtractorError) as e:
-                    if "cancel" in str(e).lower() or self._stop_event.is_set():
-                        self.progress.status = "cancelled"
-                        return
-                    last_error = self._clean_error(str(e)) or "Ошибка загрузки"
-                    self.logger.warning("Download attempt failed", exc_info=True)
-                except Exception as e:
-                    if self._stop_event.is_set():
-                        self.progress.status = "cancelled"
-                        return
-                    last_error = self._clean_error(str(e)) or "Неизвестная ошибка"
-                    self.logger.warning("Download attempt failed unexpectedly", exc_info=True)
 
+                last_error = attempt_error
                 if attempt < MAX_ATTEMPTS and self._should_retry(last_error):
                     self.progress.status = "extracting"
                     self.progress.retry_message = (
@@ -398,6 +452,11 @@ class MediaDownloader:
         finally:
             self._ydl = None
             self._emit()
+
+    @staticmethod
+    def _embedding_failed(error: str) -> bool:
+        low = error.lower()
+        return any(marker in low for marker in ("thumbnail", "embed", "cover", "mutagen"))
 
     @staticmethod
     def _should_retry(error: str) -> bool:

@@ -14,13 +14,37 @@ import components
 class EnsureMinimumTests(unittest.TestCase):
     def test_missing_nothing_does_not_install(self):
         with patch.object(bootstrap, "ytdlp_ready", return_value=True), patch.object(
-            bootstrap, "ffmpeg_ready", return_value=True
-        ), patch.object(bootstrap, "install_ytdlp") as ytdlp, patch.object(
-            bootstrap, "install_ffmpeg"
-        ) as ffmpeg:
+            bootstrap, "embed_ready", return_value=True
+        ), patch.object(bootstrap, "ffmpeg_ready", return_value=True), patch.object(
+            bootstrap, "install_ytdlp"
+        ) as ytdlp, patch.object(bootstrap, "install_ffmpeg") as ffmpeg:
             self.assertEqual(bootstrap.ensure_minimum(), [])
         ytdlp.assert_not_called()
         ffmpeg.assert_not_called()
+
+    def test_missing_cover_support_is_installed_without_blocking(self):
+        calls = []
+        with patch.object(bootstrap, "ytdlp_ready", return_value=True), patch.object(
+            bootstrap, "embed_ready", return_value=False
+        ), patch.object(bootstrap, "ffmpeg_ready", return_value=True), patch.object(
+            bootstrap, "install_ytdlp",
+            side_effect=lambda log=None, progress=None: calls.append("embed"),
+        ):
+            errors = bootstrap.ensure_minimum()
+        self.assertEqual(calls, ["embed"])
+        self.assertEqual(errors, [])
+
+    def test_cover_support_failure_is_not_fatal(self):
+        def broken(log=None, progress=None):
+            raise RuntimeError("offline")
+
+        with patch.object(bootstrap, "ytdlp_ready", return_value=True), patch.object(
+            bootstrap, "embed_ready", return_value=False
+        ), patch.object(bootstrap, "ffmpeg_ready", return_value=True), patch.object(
+            bootstrap, "install_ytdlp", side_effect=broken
+        ):
+            errors = bootstrap.ensure_minimum()
+        self.assertEqual(errors, [])
 
     def test_installs_both_components_in_parallel(self):
         names = []
