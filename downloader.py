@@ -68,6 +68,56 @@ RETRYABLE_MARKERS = (
 
 MAX_ATTEMPTS = len(CLIENT_FALLBACKS)
 
+# Языки субтитров по умолчанию: русский и английский.
+SUBTITLE_LANGS_DEFAULT = "ru,en"
+
+# Категории SponsorBlock в том порядке, в котором они показываются в интерфейсе.
+SPONSOR_CATEGORIES = (
+    "sponsor",
+    "selfpromo",
+    "interaction",
+    "intro",
+    "outro",
+    "preview",
+    "filler",
+    "music_offtopic",
+)
+# По умолчанию отмечаем только основные категории, остальные владелец включает сам.
+SPONSOR_DEFAULT_CATEGORIES = ("sponsor", "selfpromo", "interaction", "intro", "outro")
+SPONSOR_MODES = ("off", "mark", "remove")
+
+
+def parse_subtitle_langs(value) -> list[str]:
+    """Разбирает строку «ru, en» в список языков без повторов и мусора."""
+    if isinstance(value, (list, tuple, set)):
+        raw = [str(part) for part in value]
+    else:
+        raw = str(value or "").replace(";", ",").split(",")
+    langs: list[str] = []
+    for part in raw:
+        for token in part.replace("\t", " ").split():
+            token = token.strip()
+            if not token:
+                continue
+            # Коды языков yt-dlp: en, ru, en-US, zh-Hans, ru-orig и т.п.
+            if not all(ch.isalnum() or ch in "-_" for ch in token):
+                continue
+            if token not in langs:
+                langs.append(token)
+    return langs
+
+
+def normalize_sponsor_categories(value) -> list[str]:
+    """Оставляет только известные категории в каноническом порядке.
+
+    None означает «по умолчанию», пустой список — «ничего не трогать».
+    """
+    if value is None:
+        chosen = set(SPONSOR_DEFAULT_CATEGORIES)
+    else:
+        chosen = {str(item).strip().lower() for item in value if str(item).strip()}
+    return [category for category in SPONSOR_CATEGORIES if category in chosen]
+
 
 def build_runtime_opts(clients: list[str] | None = None, proxy: str | None = None) -> dict:
     """Опции, нужные для текущего состояния YouTube (PO token, JS-челлендж).
@@ -247,14 +297,23 @@ class MediaDownloader:
         restrict_filenames: bool = True,
         download_archive: str | None = None,
         embed_media: bool = True,
+        subtitles: bool = False,
+        sub_langs: str = SUBTITLE_LANGS_DEFAULT,
+        sub_auto: bool = False,
+        sub_embed: bool = True,
+        sponsor_mode: str = "off",
+        sponsor_categories: list[str] | None = None,
     ):
         register_cookie_secrets(cookies_file)
         url = clean_media_url(url)
         self.logger.info("Download started: url=%s mode=%s format=%s audio=%s quality=%s playlist=%s:%s "
-                         "cookies_file=%s browser=%s proxy_enabled=%s archive_enabled=%s embed_media=%s output=%s",
+                         "cookies_file=%s browser=%s proxy_enabled=%s archive_enabled=%s embed_media=%s "
+                         "subtitles=%s sub_langs=%s sub_auto=%s sub_embed=%s sponsor=%s sponsor_categories=%s "
+                         "output=%s",
                          url, mode, custom_format, audio_format, audio_quality, playlist_start, playlist_end,
                          bool(cookies_file), cookies_from_browser, bool(proxy), bool(download_archive),
-                         bool(embed_media), output_dir)
+                         bool(embed_media), bool(subtitles), sub_langs, bool(sub_auto), bool(sub_embed),
+                         sponsor_mode, sponsor_categories, output_dir)
         self.progress = DownloadProgress()
         self._url = url
         self.progress.status = "extracting"
@@ -317,19 +376,14 @@ class MediaDownloader:
             opts["ffmpeg_location"] = ffmpeg
         self.logger.info("FFmpeg location: %s", ffmpeg or "not found")
 
+        postprocessors: list[dict] = []
         if mode == "audio":
             opts["format"] = "ba/best"
             codec = audio_format if audio_format in ("mp3", "m4a", "opus", "wav", "flac") else "mp3"
             pp = {"key": "FFmpegExtractAudio", "preferredcodec": codec}
             if codec not in ("wav", "flac"):
                 pp["preferredquality"] = audio_quality
-            opts["postprocessors"] = [pp, {"key": "FFmpegMetadata"}]
-            if embed_media:
-                # Сначала приводим обложку к JPEG (иначе WebP не встроить),
-                # затем вкладываем её в файл и только потом пишем теги.
-                opts["writethumbnail"] = True
-                opts["postprocessors"].insert(1, {"key": "FFmpegThumbnailsConvertor", "format": "jpg"})
-                opts["postprocessors"].insert(2, {"key": "EmbedThumbnail"})
+            postprocessors.append(pp)
         elif mode == "video":
             # Только видео, без звуковой дорожки
             opts["format"] = "bv"
@@ -342,13 +396,52 @@ class MediaDownloader:
         # видео и аудиоформаты после конвертации. Для произвольного формата из
         # таблицы контейнер неизвестен, поэтому не рискуем повторной загрузкой.
         embed_video = mode in ("best", "video") or (mode == "custom" and "+" in (custom_format or ""))
-        if embed_media and mode != "audio" and embed_video:
+        if embed_media and (mode == "audio" or embed_video):
+            # Сначала приводим обложку к JPEG (иначе WebP не встроить),
+            # затем вкладываем её в файл и только потом пишем теги.
             opts["writethumbnail"] = True
-            opts["postprocessors"] = [
-                {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
-                {"key": "EmbedThumbnail"},
-                {"key": "FFmpegMetadata"},
-            ]
+            postprocessors.append({"key": "FFmpegThumbnailsConvertor", "format": "jpg"})
+            postprocessors.append({"key": "EmbedThumbnail"})
+
+        subtitle_langs = parse_subtitle_langs(sub_langs) if subtitles else []
+        if subtitles and not subtitle_langs:
+            subtitle_langs = parse_subtitle_langs(SUBTITLE_LANGS_DEFAULT)
+        if subtitle_langs:
+            opts["writesubtitles"] = True
+            opts["subtitleslangs"] = subtitle_langs
+            if sub_auto:
+                opts["writeautomaticsub"] = True
+            # Сначала приводим субтитры к srt: так они читаются плеерами и
+            # корректно вшиваются в mp4. Конвертация идёт до скачивания
+            # дорожек, встраивание — уже после них.
+            postprocessors.append(
+                {"key": "FFmpegSubtitlesConvertor", "format": "srt", "when": "before_dl"}
+            )
+            if sub_embed:
+                postprocessors.append({"key": "FFmpegEmbedSubtitle"})
+
+        sponsor_mode = sponsor_mode if sponsor_mode in SPONSOR_MODES else "off"
+        categories = normalize_sponsor_categories(sponsor_categories)
+        sponsor_enabled = sponsor_mode in ("mark", "remove") and bool(categories)
+        if sponsor_enabled:
+            postprocessors.append(
+                {"key": "SponsorBlock", "categories": categories, "when": "after_filter"}
+            )
+            # ModifyChapters вырезает сегменты (режим «вырезать») или добавляет
+            # их как главы (режим «пометить»). Он должен идти после встраивания
+            # субтитров и до FFmpegMetadata.
+            postprocessors.append({
+                "key": "ModifyChapters",
+                "remove_sponsor_segments": categories if sponsor_mode == "remove" else [],
+            })
+
+        # Теги нужны всегда для аудио, при встраивании обложки и для глав
+        # SponsorBlock. FFmpegMetadata идёт последним.
+        if mode == "audio" or (embed_media and embed_video) or sponsor_enabled:
+            postprocessors.append({"key": "FFmpegMetadata"})
+
+        if postprocessors:
+            opts["postprocessors"] = postprocessors
 
         # Объединяем в mp4 только когда в результате есть видео и аудио.
         if mode == "best" or (mode == "custom" and not custom_audio_only):
@@ -370,7 +463,7 @@ class MediaDownloader:
             if result:
                 raise RuntimeError("Не все файлы удалось скачать. Проверьте доступность видео в плейлисте.")
 
-        def without_embedding(run_opts: Dict[str, Any]) -> Dict[str, Any]:
+        def without_thumbnail(run_opts: Dict[str, Any]) -> Dict[str, Any]:
             plain = dict(run_opts)
             plain.pop("writethumbnail", None)
             plain["postprocessors"] = [
@@ -378,6 +471,33 @@ class MediaDownloader:
                 if pp.get("key") not in ("EmbedThumbnail", "FFmpegThumbnailsConvertor")
             ]
             return plain
+
+        def without_subtitle_embedding(run_opts: Dict[str, Any]) -> Dict[str, Any]:
+            plain = dict(run_opts)
+            plain["postprocessors"] = [
+                pp for pp in plain.get("postprocessors", [])
+                if pp.get("key") != "FFmpegEmbedSubtitle"
+            ]
+            return plain
+
+        def without_sponsorblock(run_opts: Dict[str, Any]) -> Dict[str, Any]:
+            plain = dict(run_opts)
+            plain["postprocessors"] = [
+                pp for pp in plain.get("postprocessors", [])
+                if pp.get("key") not in ("SponsorBlock", "ModifyChapters")
+            ]
+            return plain
+
+        def fallback_for(run_opts: Dict[str, Any], error: str):
+            """Подбирает вариант без необязательного шага, который сломался."""
+            keys = {pp.get("key") for pp in run_opts.get("postprocessors", [])}
+            if "SponsorBlock" in keys and self._sponsor_failed(error):
+                return without_sponsorblock(run_opts), "SponsorBlock недоступен, продолжаю без него..."
+            if "FFmpegEmbedSubtitle" in keys and self._subtitle_embed_failed(error):
+                return without_subtitle_embedding(run_opts), "Не удалось вшить субтитры, сохраняю их отдельными файлами..."
+            if "EmbedThumbnail" in keys and self._embedding_failed(error):
+                return without_thumbnail(run_opts), "Не удалось встроить обложку, сохраняю файл без неё..."
+            return None, ""
 
         try:
             for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -390,14 +510,12 @@ class MediaDownloader:
                 ensure_pot_server()
                 attempt_opts.update(build_runtime_opts(clients=CLIENT_FALLBACKS[attempt - 1], proxy=proxy))
 
-                # Если обложку встроить не удалось (неподдерживаемый контейнер,
-                # битый JPEG), повторяем без неё: сам файл важнее картинки.
-                variants = [attempt_opts]
-                if attempt_opts.get("writethumbnail"):
-                    variants.append(without_embedding(attempt_opts))
-
+                # Если необязательный шаг не удался (обложка, вшивание
+                # субтитров, SponsorBlock), повторяем без него: сам файл
+                # важнее оформления.
+                run_opts = attempt_opts
                 attempt_error = ""
-                for index, run_opts in enumerate(variants):
+                for _ in range(4):
                     try:
                         run(run_opts)
                         attempt_error = ""
@@ -415,12 +533,13 @@ class MediaDownloader:
                         attempt_error = self._clean_error(str(e)) or "Неизвестная ошибка"
                         self.logger.warning("Download attempt failed unexpectedly", exc_info=True)
 
-                    if index + 1 < len(variants) and self._embedding_failed(attempt_error):
-                        self.logger.info("Cover art embedding failed, retrying without it")
-                        self.progress.retry_message = "Не удалось встроить обложку, сохраняю файл без неё..."
-                        self._emit()
-                        continue
-                    break
+                    fallback, message = fallback_for(run_opts, attempt_error)
+                    if fallback is None:
+                        break
+                    self.logger.info("Optional postprocessing failed, retrying without it: %s", message)
+                    self.progress.retry_message = message
+                    self._emit()
+                    run_opts = fallback
 
                 if not attempt_error:
                     if self._stop_event.is_set():
@@ -456,7 +575,17 @@ class MediaDownloader:
     @staticmethod
     def _embedding_failed(error: str) -> bool:
         low = error.lower()
-        return any(marker in low for marker in ("thumbnail", "embed", "cover", "mutagen"))
+        return any(marker in low for marker in
+                   ("thumbnail", "cover", "mutagen", "attached_pic", "ffprobe", "embed using"))
+
+    @staticmethod
+    def _subtitle_embed_failed(error: str) -> bool:
+        low = error.lower()
+        return any(marker in low for marker in ("subtitle", "субтит", ".srt", ".ass", ".vtt"))
+
+    @staticmethod
+    def _sponsor_failed(error: str) -> bool:
+        return "sponsorblock" in error.lower()
 
     @staticmethod
     def _should_retry(error: str) -> bool:

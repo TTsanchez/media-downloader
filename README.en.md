@@ -27,6 +27,8 @@ Media Downloader is a simple desktop app for Windows. It runs entirely locally: 
 - 🎬 **Best quality** — video + audio merged into MP4
 - 🎵 **Audio only** — mp3, m4a, opus, flac, wav with bitrate selection; cover art and tags embedded
 - 🎼 **Music links** — YouTube Music, SoundCloud, Bandcamp, Mixcloud and Audiomack are saved as audio
+- 💬 **Subtitles** — `ru,en` and other languages, auto-generated captions, separate `.srt` files or embedding into MP4
+- ⏭ **SponsorBlock** — mark or remove sponsors, intros and outros on YouTube
 - 🔗 **Clean links** — a video copied from a Mix/Radio downloads alone, not the whole playlist
 - 📼 **Video only** — no sound track
 - 📚 **Playlists** — full or by index range
@@ -146,6 +148,12 @@ The queue persists between launches: unfinished links come back the next time yo
 The **History** tab lists recent downloads with a cover, title, channel, duration, format and size. Each entry has **Repeat**, **Folder** and **Delete** buttons; the whole history can be cleared at once, while the files themselves stay on disk.
 
 The history is stored locally in `%LOCALAPPDATA%\Media-Downloader\history.json` and keeps up to 300 entries.
+
+### 💬 Subtitles and SponsorBlock
+
+In **Settings → Subtitles**, enable downloading and enter languages separated by commas (default `ru,en`). Auto-generated captions are used when no regular subtitles exist. Files are saved as `.srt`; for MP4 they can be embedded into the video and switched in the player.
+
+**SponsorBlock** is off by default. In **Settings → SponsorBlock**, choose **Mark only** (segments become chapters) or **Cut from video**, and tick the categories you need. It works on YouTube only; if its API is unreachable, the download continues without segment data.
 
 ### 🔔 Notifications
 

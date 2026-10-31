@@ -202,6 +202,122 @@ class DownloadTests(unittest.TestCase):
         self.assertNotIn("writethumbnail", second)
         self.assertEqual(dl.progress.status, "done")
 
+    def test_subtitles_use_requested_languages_and_embed_into_video(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video", self.output, subtitles=True, sub_langs="ru,en"
+        )
+        opts = self.ydl.call_args.args[0]
+        self.assertTrue(opts["writesubtitles"])
+        self.assertEqual(opts["subtitleslangs"], ["ru", "en"])
+        self.assertNotIn("writeautomaticsub", opts)
+        postprocessors = opts["postprocessors"]
+        convertor = next(pp for pp in postprocessors if pp["key"] == "FFmpegSubtitlesConvertor")
+        self.assertEqual(convertor["format"], "srt")
+        self.assertEqual(convertor["when"], "before_dl")
+        self.assertIn("FFmpegEmbedSubtitle", [pp["key"] for pp in postprocessors])
+
+    def test_auto_subtitles_can_be_kept_as_separate_files(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video",
+            self.output,
+            subtitles=True,
+            sub_langs="ru, en, ru",
+            sub_auto=True,
+            sub_embed=False,
+        )
+        opts = self.ydl.call_args.args[0]
+        self.assertTrue(opts["writeautomaticsub"])
+        self.assertEqual(opts["subtitleslangs"], ["ru", "en"])
+        keys = [pp["key"] for pp in opts["postprocessors"]]
+        self.assertIn("FFmpegSubtitlesConvertor", keys)
+        self.assertNotIn("FFmpegEmbedSubtitle", keys)
+
+    def test_subtitle_languages_drop_invalid_tokens(self):
+        self.assertEqual(
+            downloader.parse_subtitle_langs(" en, ru;, en-US, b@d code! "),
+            ["en", "ru", "en-US"],
+        )
+        downloader.MediaDownloader().download(
+            "https://example.com/video", self.output, subtitles=True, sub_langs="??"
+        )
+        opts = self.ydl.call_args.args[0]
+        self.assertEqual(opts["subtitleslangs"], ["ru", "en"])
+
+    def test_sponsorblock_marks_default_categories(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video", self.output, sponsor_mode="mark"
+        )
+        opts = self.ydl.call_args.args[0]
+        postprocessors = opts["postprocessors"]
+        sponsor = next(pp for pp in postprocessors if pp["key"] == "SponsorBlock")
+        self.assertEqual(sponsor["categories"], list(downloader.SPONSOR_DEFAULT_CATEGORIES))
+        self.assertEqual(sponsor["when"], "after_filter")
+        modify = next(pp for pp in postprocessors if pp["key"] == "ModifyChapters")
+        self.assertEqual(modify["remove_sponsor_segments"], [])
+        self.assertIn("FFmpegMetadata", [pp["key"] for pp in postprocessors])
+
+    def test_sponsorblock_removes_only_selected_categories(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video",
+            self.output,
+            sponsor_mode="remove",
+            sponsor_categories=["intro", "sponsor", "unknown"],
+        )
+        opts = self.ydl.call_args.args[0]
+        postprocessors = opts["postprocessors"]
+        sponsor = next(pp for pp in postprocessors if pp["key"] == "SponsorBlock")
+        self.assertEqual(sponsor["categories"], ["sponsor", "intro"])
+        modify = next(pp for pp in postprocessors if pp["key"] == "ModifyChapters")
+        self.assertEqual(modify["remove_sponsor_segments"], ["sponsor", "intro"])
+
+    def test_sponsorblock_is_off_by_default_and_without_categories(self):
+        downloader.MediaDownloader().download("https://example.com/video", self.output)
+        keys = [pp["key"] for pp in self.ydl.call_args.args[0].get("postprocessors", [])]
+        self.assertNotIn("SponsorBlock", keys)
+        self.ydl.reset_mock()
+        downloader.MediaDownloader().download(
+            "https://example.com/video",
+            self.output,
+            sponsor_mode="mark",
+            sponsor_categories=[],
+        )
+        keys = [pp["key"] for pp in self.ydl.call_args.args[0].get("postprocessors", [])]
+        self.assertNotIn("SponsorBlock", keys)
+
+    def test_sponsorblock_failure_retries_without_it(self):
+        failure = downloader.DownloadError(
+            "ERROR: Postprocessing: Unable to communicate with SponsorBlock API: timed out"
+        )
+        success = MagicMock()
+        success.__enter__.return_value.download.return_value = 0
+        self.ydl.side_effect = [failure, success]
+        dl = downloader.MediaDownloader()
+        dl.download("https://example.com/video", self.output, sponsor_mode="mark")
+        self.assertEqual(self.ydl.call_count, 2)
+        first = [pp["key"] for pp in self.ydl.call_args_list[0].args[0]["postprocessors"]]
+        second = [pp["key"] for pp in self.ydl.call_args_list[1].args[0]["postprocessors"]]
+        self.assertIn("SponsorBlock", first)
+        self.assertNotIn("SponsorBlock", second)
+        self.assertNotIn("ModifyChapters", second)
+        self.assertEqual(dl.progress.status, "done")
+
+    def test_subtitle_embedding_failure_keeps_separate_subtitles(self):
+        failure = downloader.DownloadError(
+            "ERROR: Postprocessing: Unable to embed subtitles into video"
+        )
+        success = MagicMock()
+        success.__enter__.return_value.download.return_value = 0
+        self.ydl.side_effect = [failure, success]
+        dl = downloader.MediaDownloader()
+        dl.download("https://example.com/video", self.output, subtitles=True)
+        self.assertEqual(self.ydl.call_count, 2)
+        second = self.ydl.call_args_list[1].args[0]
+        self.assertTrue(second["writesubtitles"])
+        keys = [pp["key"] for pp in second["postprocessors"]]
+        self.assertIn("FFmpegSubtitlesConvertor", keys)
+        self.assertNotIn("FFmpegEmbedSubtitle", keys)
+        self.assertEqual(dl.progress.status, "done")
+
 
 class UpdateTests(unittest.TestCase):
     def test_frozen_version_is_loaded_from_bundle(self):

@@ -54,7 +54,13 @@ def resource_path(name: str) -> str:
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
 
-from downloader import DownloadProgress, MediaDownloader
+from downloader import (
+    SPONSOR_CATEGORIES,
+    SPONSOR_DEFAULT_CATEGORIES,
+    SUBTITLE_LANGS_DEFAULT,
+    DownloadProgress,
+    MediaDownloader,
+)
 from history import History
 from notifications import SystemNotifier
 import history as history_store
@@ -100,6 +106,22 @@ FFMPEG_URL = "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest"
 RELEASES_URL = "https://github.com/TTsanchez/media-downloader/releases/latest"
 DEFAULT_ARCHIVE_FILE = Path.home() / ".media_downloader_archive.txt"
 QUALITY_PRESETS = ("Авто", "2160p", "1440p", "1080p", "720p", "480p")
+SPONSOR_MODE_LABELS = {
+    "off": "Выключен",
+    "mark": "Только помечать",
+    "remove": "Вырезать из видео",
+}
+SPONSOR_MODE_BY_LABEL = {label: key for key, label in SPONSOR_MODE_LABELS.items()}
+SPONSOR_CATEGORY_LABELS = {
+    "sponsor": "Спонсорский блок",
+    "selfpromo": "Самореклама",
+    "interaction": "Напоминание подписаться",
+    "intro": "Вступление",
+    "outro": "Концовка",
+    "preview": "Превью или повтор",
+    "filler": "Отступления",
+    "music_offtopic": "Разговор вместо музыки",
+}
 QUEUE_CONFIG_KEY = "queue"
 MAX_SAVED_QUEUE = 500
 HISTORY_FILE = history_store.history_file()
@@ -499,6 +521,12 @@ class YTApp(ttkb.Window):
                 "skip_downloaded": self.skip_downloaded_var.get(),
                 "embed_media": bool(self.embed_media_var.get()),
                 "auto_audio": bool(self.auto_audio_var.get()),
+                "subtitles": bool(self.subtitles_var.get()),
+                "sub_langs": self.sub_langs_var.get().strip() or SUBTITLE_LANGS_DEFAULT,
+                "sub_auto": bool(self.sub_auto_var.get()),
+                "sub_embed": bool(self.sub_embed_var.get()),
+                "sponsor_mode": self._sponsor_mode_key(),
+                "sponsor_categories": self._sponsor_categories(),
                 "notifications": bool(self.notify_var.get()),
                 "archive_file": self.archive_var.get().strip(),
                 "browser": self._active_browser() or "без cookies",
@@ -521,6 +549,17 @@ class YTApp(ttkb.Window):
         self.skip_downloaded_var.set(bool(self.config.get("skip_downloaded", False)))
         self.embed_media_var.set(bool(self.config.get("embed_media", True)))
         self.auto_audio_var.set(bool(self.config.get("auto_audio", True)))
+        self.subtitles_var.set(bool(self.config.get("subtitles", False)))
+        self.sub_langs_var.set(str(self.config.get("sub_langs") or SUBTITLE_LANGS_DEFAULT))
+        self.sub_auto_var.set(bool(self.config.get("sub_auto", False)))
+        self.sub_embed_var.set(bool(self.config.get("sub_embed", True)))
+        sponsor_mode = str(self.config.get("sponsor_mode") or "off")
+        self.sponsor_mode_var.set(SPONSOR_MODE_LABELS.get(sponsor_mode, SPONSOR_MODE_LABELS["off"]))
+        saved_categories = self.config.get("sponsor_categories")
+        if not isinstance(saved_categories, list):
+            saved_categories = list(SPONSOR_DEFAULT_CATEGORIES)
+        for category, variable in self.sponsor_cat_vars.items():
+            variable.set(category in saved_categories)
         self.notify_var.set(bool(self.config.get("notifications", True)))
         self.archive_var.set(self.config.get("archive_file") or str(DEFAULT_ARCHIVE_FILE))
         self._saved_browser = self.config.get("browser", "без cookies")
@@ -536,6 +575,12 @@ class YTApp(ttkb.Window):
             self._apply_cookie_status(saved_cookies)
         else:
             self.cookies_path = None
+
+    def _sponsor_mode_key(self) -> str:
+        return SPONSOR_MODE_BY_LABEL.get(self.sponsor_mode_var.get(), "off")
+
+    def _sponsor_categories(self) -> list[str]:
+        return [category for category in SPONSOR_CATEGORIES if self.sponsor_cat_vars[category].get()]
 
     def _queue_snapshot(self) -> list[dict]:
         """Возвращает очередь для сохранения в конфиге (без путей и состояния потока)."""
@@ -558,6 +603,12 @@ class YTApp(ttkb.Window):
                 "end": item.get("end", 0),
                 "fmt_label": item.get("fmt_label", ""),
                 "embed_media": bool(item.get("embed_media", True)),
+                "subtitles": bool(item.get("subtitles", False)),
+                "sub_langs": item.get("sub_langs", SUBTITLE_LANGS_DEFAULT),
+                "sub_auto": bool(item.get("sub_auto", False)),
+                "sub_embed": bool(item.get("sub_embed", True)),
+                "sponsor_mode": item.get("sponsor_mode", "off"),
+                "sponsor_categories": list(item.get("sponsor_categories") or []),
             })
         return snapshot
 
@@ -596,6 +647,12 @@ class YTApp(ttkb.Window):
                 "end": max(0, end),
                 "fmt_label": str(entry.get("fmt_label") or "Лучшее"),
                 "embed_media": bool(entry.get("embed_media", True)),
+                "subtitles": bool(entry.get("subtitles", False)),
+                "sub_langs": str(entry.get("sub_langs") or SUBTITLE_LANGS_DEFAULT),
+                "sub_auto": bool(entry.get("sub_auto", False)),
+                "sub_embed": bool(entry.get("sub_embed", True)),
+                "sponsor_mode": str(entry.get("sponsor_mode") or "off"),
+                "sponsor_categories": list(entry.get("sponsor_categories") or []),
             })
             restored += 1
         if restored:
@@ -612,6 +669,15 @@ class YTApp(ttkb.Window):
         self.skip_downloaded_var = tk.BooleanVar(value=False)
         self.embed_media_var = tk.BooleanVar(value=True)
         self.auto_audio_var = tk.BooleanVar(value=True)
+        self.subtitles_var = tk.BooleanVar(value=False)
+        self.sub_langs_var = v(value=SUBTITLE_LANGS_DEFAULT)
+        self.sub_auto_var = tk.BooleanVar(value=False)
+        self.sub_embed_var = tk.BooleanVar(value=True)
+        self.sponsor_mode_var = v(value=SPONSOR_MODE_LABELS["off"])
+        self.sponsor_cat_vars = {
+            category: tk.BooleanVar(value=category in SPONSOR_DEFAULT_CATEGORIES)
+            for category in SPONSOR_CATEGORIES
+        }
         self.notify_var = tk.BooleanVar(value=True)
         self.archive_var = v(value=str(DEFAULT_ARCHIVE_FILE))
         self.browser_var = v(value="без cookies")
@@ -905,6 +971,92 @@ class YTApp(ttkb.Window):
                 "Обложка берётся с сайта и вкладывается в MP3, FLAC, M4A и MP4. "
                 "Если встроить её не удалось, файл сохранится без обложки — загрузка не прервётся.\n"
                 "Музыкальные сервисы: YouTube Music, SoundCloud, Bandcamp, Mixcloud, Audiomack."
+            ),
+            bootstyle="secondary",
+            font=("Segoe UI", 8),
+            wraplength=820,
+            justify=LEFT,
+        ).pack(anchor="w", pady=(8, 0))
+
+        subbox = ttkb.LabelFrame(tab_set, text="Субтитры", padding=(14, 10, 14, 10))
+        subbox.pack(fill=X, pady=(10, 0))
+        ttkb.Checkbutton(
+            subbox,
+            text="Скачивать субтитры",
+            variable=self.subtitles_var,
+            command=self._save_config,
+        ).pack(anchor="w")
+        subrow = ttkb.Frame(subbox)
+        subrow.pack(fill=X, pady=(6, 0))
+        ttkb.Label(subrow, text="Языки (через запятую):", width=22).pack(side=LEFT)
+        sub_entry = ttkb.Entry(subrow, textvariable=self.sub_langs_var, width=24)
+        sub_entry.pack(side=LEFT, ipady=3)
+        sub_entry.bind("<FocusOut>", lambda e: self._save_config())
+        sub_entry.bind("<Return>", lambda e: self._save_config())
+        ttkb.Label(
+            subrow,
+            text=f"например, {SUBTITLE_LANGS_DEFAULT}",
+            bootstyle="secondary",
+            font=("Segoe UI", 8),
+        ).pack(side=LEFT, padx=(8, 0))
+        ttkb.Checkbutton(
+            subbox,
+            text="Брать авто-субтитры, если обычных нет",
+            variable=self.sub_auto_var,
+            command=self._save_config,
+        ).pack(anchor="w", pady=(6, 0))
+        ttkb.Checkbutton(
+            subbox,
+            text="Вшивать субтитры в MP4 (иначе — отдельные файлы .srt рядом с видео)",
+            variable=self.sub_embed_var,
+            command=self._save_config,
+        ).pack(anchor="w", pady=(4, 0))
+        ttkb.Label(
+            subbox,
+            text=(
+                "Файлы всегда сохраняются в srt. Для аудио и не-MP4 субтитры остаются отдельными файлами.\n"
+                "Если вшить не удалось, загрузка продолжится, а субтитры сохранятся рядом."
+            ),
+            bootstyle="secondary",
+            font=("Segoe UI", 8),
+            wraplength=820,
+            justify=LEFT,
+        ).pack(anchor="w", pady=(8, 0))
+
+        sbbox = ttkb.LabelFrame(
+            tab_set,
+            text="SponsorBlock — реклама, заставки и концовки на YouTube",
+            padding=(14, 10, 14, 10),
+        )
+        sbbox.pack(fill=X, pady=(10, 0))
+        sbrow = ttkb.Frame(sbbox)
+        sbrow.pack(fill=X)
+        ttkb.Label(sbrow, text="Режим:", width=8).pack(side=LEFT)
+        cmb_sponsor = ttkb.Combobox(
+            sbrow,
+            values=list(SPONSOR_MODE_LABELS.values()),
+            textvariable=self.sponsor_mode_var,
+            state="readonly",
+            width=22,
+        )
+        cmb_sponsor.pack(side=LEFT, padx=(5, 0))
+        cmb_sponsor.bind("<<ComboboxSelected>>", lambda e: self._save_config())
+        ttkb.Label(sbbox, text="Категории:", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 2))
+        catrow = ttkb.Frame(sbbox)
+        catrow.pack(fill=X)
+        for index, category in enumerate(SPONSOR_CATEGORIES):
+            ttkb.Checkbutton(
+                catrow,
+                text=SPONSOR_CATEGORY_LABELS[category],
+                variable=self.sponsor_cat_vars[category],
+                command=self._save_config,
+            ).grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 18), pady=1)
+        ttkb.Label(
+            sbbox,
+            text=(
+                "«Только помечать» добавляет сегменты в главы, «Вырезать» удаляет их из файла. "
+                "По умолчанию SponsorBlock выключен и отмечены пять основных категорий.\n"
+                "Сервис работает только для YouTube. Если его API недоступен, загрузка продолжится без разметки."
             ),
             bootstyle="secondary",
             font=("Segoe UI", 8),
@@ -1893,6 +2045,12 @@ class YTApp(ttkb.Window):
             "end": end,
             "fmt_label": label,
             "embed_media": bool(self.embed_media_var.get()),
+            "subtitles": bool(self.subtitles_var.get()),
+            "sub_langs": self.sub_langs_var.get().strip() or SUBTITLE_LANGS_DEFAULT,
+            "sub_auto": bool(self.sub_auto_var.get()),
+            "sub_embed": bool(self.sub_embed_var.get()),
+            "sponsor_mode": self._sponsor_mode_key(),
+            "sponsor_categories": self._sponsor_categories(),
         })
 
     def _queue_update_row(self, item: dict):
@@ -2067,6 +2225,12 @@ class YTApp(ttkb.Window):
                 playlist_start=item["start"],
                 playlist_end=item["end"],
                 embed_media=bool(item.get("embed_media", True)),
+                subtitles=bool(item.get("subtitles", False)),
+                sub_langs=str(item.get("sub_langs") or SUBTITLE_LANGS_DEFAULT),
+                sub_auto=bool(item.get("sub_auto", False)),
+                sub_embed=bool(item.get("sub_embed", True)),
+                sponsor_mode=str(item.get("sponsor_mode") or "off"),
+                sponsor_categories=list(item.get("sponsor_categories") or []),
                 **item["options"],
             )
             prog = dl.progress
@@ -3019,6 +3183,12 @@ class YTApp(ttkb.Window):
             restrict_filenames=self.restrict_names_var.get(),
             download_archive=self.archive_var.get().strip() if self.skip_downloaded_var.get() else None,
             embed_media=bool(self.embed_media_var.get()),
+            subtitles=bool(self.subtitles_var.get()),
+            sub_langs=self.sub_langs_var.get().strip() or SUBTITLE_LANGS_DEFAULT,
+            sub_auto=bool(self.sub_auto_var.get()),
+            sub_embed=bool(self.sub_embed_var.get()),
+            sponsor_mode=self._sponsor_mode_key(),
+            sponsor_categories=self._sponsor_categories(),
         )
         self._last_download_args = dict(args)
         threading.Thread(target=self._worker, args=(args,), daemon=True).start()

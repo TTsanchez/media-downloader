@@ -2,6 +2,7 @@ import tempfile
 import threading
 import tkinter as tk
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -55,6 +56,13 @@ class UITests(unittest.TestCase):
         self.app._q_paused = False
         self.app.playlist_all_var.set(True)
         self.app.url_var.set("")
+        self.app.subtitles_var.set(False)
+        self.app.sub_langs_var.set(main.SUBTITLE_LANGS_DEFAULT)
+        self.app.sub_auto_var.set(False)
+        self.app.sub_embed_var.set(True)
+        self.app.sponsor_mode_var.set(main.SPONSOR_MODE_LABELS["off"])
+        for category, variable in self.app.sponsor_cat_vars.items():
+            variable.set(category in main.SPONSOR_DEFAULT_CATEGORIES)
         self.app.history.clear()
         self.app._history_dirty = True
         self.app._queue_clear()
@@ -226,6 +234,64 @@ class UITests(unittest.TestCase):
         self.assertEqual(len(self.app.queue_items), 1)
         self.assertEqual(self.app.queue_items[0]["url"], "https://example.com/kept")
         self.assertEqual(self.app.queue_items[0]["status"], "ожидание")
+
+    def test_queue_keeps_subtitle_and_sponsor_settings(self):
+        self.app.subtitles_var.set(True)
+        self.app.sub_langs_var.set("ru, en")
+        self.app.sub_auto_var.set(True)
+        self.app.sub_embed_var.set(False)
+        self.app.sponsor_mode_var.set(main.SPONSOR_MODE_LABELS["remove"])
+        self.app.sponsor_cat_vars["filler"].set(True)
+        self.assertTrue(self.app._queue_append("https://example.com/subtitles"))
+
+        item = self.app.queue_items[0]
+        self.assertTrue(item["subtitles"])
+        self.assertEqual(item["sub_langs"], "ru, en")
+        self.assertTrue(item["sub_auto"])
+        self.assertFalse(item["sub_embed"])
+        self.assertEqual(item["sponsor_mode"], "remove")
+        self.assertIn("filler", item["sponsor_categories"])
+
+        snapshot = self.app._queue_snapshot()
+        self.app._queue_clear()
+        self.app.config[main.QUEUE_CONFIG_KEY] = snapshot
+        self.app._restore_queue()
+        restored = self.app.queue_items[0]
+        self.assertTrue(restored["subtitles"])
+        self.assertEqual(restored["sub_langs"], "ru, en")
+        self.assertTrue(restored["sub_auto"])
+        self.assertFalse(restored["sub_embed"])
+        self.assertEqual(restored["sponsor_mode"], "remove")
+        self.assertIn("filler", restored["sponsor_categories"])
+
+    def test_settings_save_and_restore_subtitles_and_sponsorblock(self):
+        self.app.subtitles_var.set(True)
+        self.app.sub_langs_var.set("ru,en-US")
+        self.app.sub_auto_var.set(True)
+        self.app.sub_embed_var.set(False)
+        self.app.sponsor_mode_var.set(main.SPONSOR_MODE_LABELS["mark"])
+        self.app.sponsor_cat_vars["outro"].set(False)
+        self.app._save_config()
+
+        data = json.loads(main.CONFIG_FILE.read_text(encoding="utf-8"))
+        self.assertTrue(data["subtitles"])
+        self.assertEqual(data["sub_langs"], "ru,en-US")
+        self.assertTrue(data["sub_auto"])
+        self.assertFalse(data["sub_embed"])
+        self.assertEqual(data["sponsor_mode"], "mark")
+        self.assertNotIn("outro", data["sponsor_categories"])
+
+        self.app.subtitles_var.set(False)
+        self.app.sponsor_mode_var.set(main.SPONSOR_MODE_LABELS["off"])
+        self.app.sponsor_cat_vars["outro"].set(True)
+        self.app.config = data
+        self.app._apply_config()
+        self.assertTrue(self.app.subtitles_var.get())
+        self.assertEqual(self.app.sub_langs_var.get(), "ru,en-US")
+        self.assertTrue(self.app.sub_auto_var.get())
+        self.assertFalse(self.app.sub_embed_var.get())
+        self.assertEqual(self.app.sponsor_mode_var.get(), main.SPONSOR_MODE_LABELS["mark"])
+        self.assertFalse(self.app.sponsor_cat_vars["outro"].get())
 
     def test_queue_accepts_links_from_a_text_file(self):
         with tempfile.TemporaryDirectory() as folder:
