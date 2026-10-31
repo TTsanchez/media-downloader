@@ -80,6 +80,30 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(dl.progress.status, "error")
         self.ydl.assert_not_called()
 
+    def test_empty_format_list_tries_the_next_client(self):
+        failure = downloader.DownloadError("ERROR: [youtube] x: Requested format is not available")
+        success = MagicMock()
+        success.__enter__.return_value.download.return_value = 0
+        self.ydl.side_effect = [failure, success]
+        dl = downloader.MediaDownloader()
+        dl._stop_event.wait = MagicMock(return_value=False)
+        dl.download("https://example.com/video", self.output)
+        self.assertEqual(self.ydl.call_count, 2)
+        self.assertEqual(dl.progress.status, "done")
+
+    def test_download_does_not_chunk_http_requests(self):
+        downloader.MediaDownloader().download("https://example.com/video", self.output)
+        opts = self.ydl.call_args.args[0]
+        self.assertNotIn("http_chunk_size", opts)
+        self.assertEqual(opts["concurrent_fragment_downloads"], 8)
+
+    def test_anonymous_clients_are_tried_before_web(self):
+        self.assertIn(["visionos"], downloader.CLIENT_FALLBACKS)
+        self.assertLess(
+            downloader.CLIENT_FALLBACKS.index(["visionos"]),
+            downloader.CLIENT_FALLBACKS.index(["web"]),
+        )
+
 
 class UpdateTests(unittest.TestCase):
     def test_frozen_version_is_loaded_from_bundle(self):

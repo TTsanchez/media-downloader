@@ -27,18 +27,22 @@ class YtDlpLogger:
     def error(self, message):
         self.logger.error("yt-dlp: %s", message)
 
-# Порядок клиентов YouTube. Если один не отдаёт видео (страница требует
-# перезагрузки, пустой список форматов), пробуем следующий.
+# Порядок попыток получить видео с YouTube. В каждой попытке — свой клиент:
+# несколько клиентов в одном запросе чаще упираются в проверку «Sign in to
+# confirm you're not a bot», чем один анонимный.
 #
-# None на первом месте — НЕ трогать player_client и оставить yt-dlp собственные
-# дефолты. Так поступает mhogomchungu/media-downloader: он вообще не передаёт
-# extractor-args, и обычные публичные видео качаются без cookies. yt-dlp сам
-# выбирает клиент по состоянию (без логина -> visionos/web), а visionos не требует
-# ни cookies, ни PO Token, ни JS-рантайма (см. INNERTUBE_CLIENTS['visionos']).
+# visionos идёт первым намеренно. Это тот же клиент, который yt-dlp выбирает
+# сам, когда рядом нет JS-рантайма (см. _DEFAULT_JSLESS_CLIENTS): он отдаёт 1080p
+# со звуком без cookies, без PO Token и без проверок «вы не робот». Как только
+# в PATH появляется Deno, дефолтом становится набор tv_samsung + visionos + web,
+# и именно web чаще всего требует cookies — поэтому дефолты оставлены на потом.
+# android_vr — запасной клиент для трансляций, web — последняя попытка.
 CLIENT_FALLBACKS: list[list[str] | None] = [
-    None,                          # чистые дефолты yt-dlp (без принудительного player_client)
-    ["web"],                       # чаще работает для живых трансляций /live/
-    ["visionos", "android_vr"],    # анонимные клиенты: часто без cookies и без PO Token
+    ["visionos"],                  # анонимный клиент: 1080p со звуком без cookies и PO Token
+    ["tv_samsung"],                # второй анонимный клиент, тоже отдаёт 1080p
+    ["default"],                   # полный набор yt-dlp (tv_samsung + visionos + web)
+    ["android_vr"],                # невысокое качество, зато без cookies
+    ["web"],                       # последняя попытка: обычно нужен PO Token или cookies
 ]
 
 # Ошибки, при которых имеет смысл повторить с другим клиентом.
@@ -46,6 +50,8 @@ RETRYABLE_MARKERS = (
     "page needs to be reloaded",
     "sign in to confirm",
     "no video formats found",
+    "requested format is not available",
+    "only images are available",
     "unable to download api page",
     "failed to resolve",
     "getaddrinfo",
@@ -55,6 +61,7 @@ RETRYABLE_MARKERS = (
     "connection refused",
     "timed out",
     "temporary failure",
+    "http error 403",
     "http error 5",
     "unable to connect",
 )
@@ -279,8 +286,11 @@ class MediaDownloader:
             "continuedl": True,
             "retries": 10,
             "fragment_retries": 10,
-            "concurrent_fragment_downloads": 5,
-            "http_chunk_size": 1048576,
+            # 8 потоков — как в ydl-studio: заметно быстрее на HLS и трансляциях.
+            "concurrent_fragment_downloads": 8,
+            # http_chunk_size намеренно не задан: с ним yt-dlp переоткрывает
+            # соединение на каждый мегабайт, и на быстром канале загрузка
+            # становится в разы медленнее.
             "buffersize": 16777216,
             "socket_timeout": 30,
             "windowsfilenames": os.name == "nt",
