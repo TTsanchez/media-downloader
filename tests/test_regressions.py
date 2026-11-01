@@ -356,6 +356,18 @@ class UpdateTests(unittest.TestCase):
             self.assertIsNotNone(script)
             self.assertIn(str(current), script.read_text(encoding="utf-8"))
 
+    def test_updater_resets_pyinstaller_environment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            current = Path(folder) / "Media-Downloader.exe"
+            diagnostic = SimpleNamespace(directory=Path(folder) / "logs", session_id="test")
+            with patch.object(utils, "get_diagnostics", return_value=diagnostic):
+                script = utils.create_updater_script(current.with_suffix(".new.exe"), current)
+            text = script.read_text(encoding="utf-8")
+            self.assertIn('set "PYINSTALLER_RESET_ENVIRONMENT=1"', text)
+            self.assertIn('set "_PYI_APPLICATION_HOME_DIR="', text)
+            self.assertIn('set "_MEIPASS2="', text)
+            self.assertIn(f'cd /d "{current.parent}"', text)
+
 
 class ProviderTests(unittest.TestCase):
     def test_shutdown_does_not_kill_external_server(self):

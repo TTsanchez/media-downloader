@@ -684,6 +684,15 @@ def create_updater_script(new_exe: Path, current_exe: Path) -> Optional[Path]:
         content = f"""@echo off
 chcp 65001 > nul
 set "UPDATE_LOG={str(update_log).replace('%', '%%')}"
+rem Новый exe запускается после выхода старого. Если оставить переменные
+rem PyInstaller, bootloader решит, что это дочерний процесс, и попробует
+rem взять python311.dll из уже удалённой временной папки.
+set "PYINSTALLER_RESET_ENVIRONMENT=1"
+set "_MEIPASS2="
+set "_PYI_APPLICATION_HOME_DIR="
+set "_PYI_ARCHIVE_FILE="
+set "_PYI_PARENT_PROCESS_LEVEL="
+set "_PYI_SPLASH_IPC="
 >>"%UPDATE_LOG%" echo [updater] Starting update
 timeout /t 2 /nobreak > nul
 :wait
@@ -697,6 +706,7 @@ if errorlevel 1 (
     >>"%UPDATE_LOG%" echo [updater] ERROR: Could not replace the executable
     exit /b 1
 )
+cd /d "{current_exe.parent}"
 start "" "{current_exe}" >>"%UPDATE_LOG%" 2>&1
 if errorlevel 1 (
     >>"%UPDATE_LOG%" echo [updater] ERROR: Could not launch the updated application
