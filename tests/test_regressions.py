@@ -38,6 +38,33 @@ class UrlCleaningTests(unittest.TestCase):
             "https://www.tiktok.com/@a/video/123",
         )
 
+    def test_rutube_requests_all_qualities(self):
+        url = "https://rutube.ru/video/1b001a729819875b24381b26d17aef44/"
+        self.assertEqual(utils.prepare_media_url(url), url + "?mq=all")
+
+    def test_rutube_keeps_existing_query(self):
+        prepared = utils.prepare_media_url("https://rutube.ru/video/1b001a729819875b24381b26d17aef44/?p=key")
+        self.assertIn("p=key", prepared)
+        self.assertIn("mq=all", prepared)
+
+    def test_rutube_quality_param_is_not_duplicated(self):
+        url = "https://rutube.ru/video/1b001a729819875b24381b26d17aef44/?mq=all"
+        self.assertEqual(utils.prepare_media_url(url), url)
+
+    def test_rutube_embed_gets_quality_param(self):
+        prepared = utils.prepare_media_url("https://rutube.ru/play/embed/a10e53b86e8f349080f718582ce4c661/")
+        self.assertEqual(
+            prepared,
+            "https://rutube.ru/play/embed/a10e53b86e8f349080f718582ce4c661/?mq=all",
+        )
+
+    def test_other_sites_are_untouched_by_quality_param(self):
+        for url in (
+            "https://www.youtube.com/watch?v=abc123",
+            "https://rutube.ru/channel/12345/",
+        ):
+            self.assertEqual(utils.prepare_media_url(url), url)
+
     def test_music_domains(self):
         for url in (
             "https://music.youtube.com/watch?v=abc123",

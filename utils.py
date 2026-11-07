@@ -505,6 +505,38 @@ def clean_media_url(url: str) -> str:
     return cleaned
 
 
+RUTUBE_MEDIA_PATH = re.compile(
+    r"^/(?:(?:live/)?video(?:/private)?|(?:play/)?embed)/[\da-z]{32}", re.IGNORECASE
+)
+
+
+def prepare_media_url(url: str) -> str:
+    """Дополняет ссылку параметрами, которые сервис ждёт от своего плеера.
+
+    Rutube отдаёт 1440p и 2160p только если в запросе к ``play/options`` есть
+    ``mq=all``. Без него API возвращает максимум 1080p, хотя в браузере
+    доступны более высокие качества. yt-dlp передаёт query-параметры из
+    ссылки в API, поэтому достаточно добавить ``mq=all`` к адресу ролика.
+    """
+    text = (url or "").strip()
+    if not text or "rutube.ru" not in text.lower():
+        return text
+    try:
+        parsed = urllib.parse.urlparse(text if "://" in text else "https://" + text)
+    except ValueError:
+        return text
+    host = (parsed.hostname or "").lower()
+    if not (host == "rutube.ru" or host.endswith(".rutube.ru")):
+        return text
+    if not RUTUBE_MEDIA_PATH.match(parsed.path):
+        return text
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    if query.get("mq") == ["all"]:
+        return text
+    query["mq"] = ["all"]
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
+
+
 def is_music_url(url: str) -> bool:
     """Ссылка ведёт на музыкальный сервис, а не на видео."""
     try:

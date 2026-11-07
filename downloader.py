@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
 
-from utils import clean_media_url, find_ffmpeg
+from utils import clean_media_url, find_ffmpeg, prepare_media_url
 from pot import find_deno, server_running, start_server
 from diagnostics import register_cookie_secrets, register_secret, report_exception
 
@@ -208,7 +208,7 @@ class MediaDownloader:
         proxy: str | None = None,
     ) -> Dict[str, Any]:
         register_cookie_secrets(cookies_file)
-        url = clean_media_url(url)
+        url = prepare_media_url(clean_media_url(url))
         self.logger.info("Extract info started: url=%s cookies_file=%s browser=%s proxy_enabled=%s",
                          url, bool(cookies_file), cookies_from_browser, bool(proxy))
         base_opts: Dict[str, Any] = {
@@ -305,7 +305,7 @@ class MediaDownloader:
         sponsor_categories: list[str] | None = None,
     ):
         register_cookie_secrets(cookies_file)
-        url = clean_media_url(url)
+        url = prepare_media_url(clean_media_url(url))
         self.logger.info("Download started: url=%s mode=%s format=%s audio=%s quality=%s playlist=%s:%s "
                          "cookies_file=%s browser=%s proxy_enabled=%s archive_enabled=%s embed_media=%s "
                          "subtitles=%s sub_langs=%s sub_auto=%s sub_embed=%s sponsor=%s sponsor_categories=%s "
