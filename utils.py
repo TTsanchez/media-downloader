@@ -452,6 +452,24 @@ MUSIC_DOMAINS = (
 )
 
 
+# youtu.be/ID, watch?v=ID, shorts/ID, embed/ID, live/ID
+YOUTUBE_ID_PATTERN = re.compile(
+    r"(?:youtube\.com/(?:watch\?(?:[^#]*&)?v=|shorts/|embed/|live/)|youtu\.be/)"
+    r"([A-Za-z0-9_-]{11})"
+)
+
+
+def youtube_video_id(url: str) -> str:
+    """Идентификатор ролика YouTube или пустая строка.
+
+    Нужен, чтобы отличать файлы одного ролика от другого: в имени файла
+    идентификатор стоит в квадратных скобках, а суффикс фрагмента у разных
+    роликов может совпадать.
+    """
+    match = YOUTUBE_ID_PATTERN.search(url or "")
+    return match.group(1) if match else ""
+
+
 def clean_media_url(url: str) -> str:
     """Убирает из ссылки параметры, из-за которых скачивается лишнее.
 

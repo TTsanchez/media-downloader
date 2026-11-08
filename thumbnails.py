@@ -11,23 +11,16 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import re
 from pathlib import Path
 
 import net
-from utils import data_root
+from utils import data_root, youtube_video_id
 
 LOGGER = logging.getLogger("media_downloader.thumbnails")
 
 MAX_BYTES = 6 * 1024 * 1024
 CACHE_LIMIT = 400
 CACHE_SUFFIX = ".img"
-
-# youtu.be/ID, watch?v=ID, shorts/ID, embed/ID, live/ID
-_YOUTUBE_ID = re.compile(
-    r"(?:youtube\.com/(?:watch\?(?:[^#]*&)?v=|shorts/|embed/|live/)|youtu\.be/)"
-    r"([A-Za-z0-9_-]{11})"
-)
 
 
 def cache_dir() -> Path:
@@ -55,10 +48,10 @@ def guess_thumbnail(url: str) -> str:
     mqdefault.jpg есть у любого публичного ролика, поэтому очередь получает
     превью сразу, не дожидаясь извлечения полной информации через yt-dlp.
     """
-    match = _YOUTUBE_ID.search(url or "")
-    if not match:
+    video_id = youtube_video_id(url or "")
+    if not video_id:
         return ""
-    return f"https://i.ytimg.com/vi/{match.group(1)}/mqdefault.jpg"
+    return f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
 
 
 def _valid_image(path: Path) -> bool:

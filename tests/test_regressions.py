@@ -1,3 +1,4 @@
+import json
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -76,6 +77,16 @@ class UrlCleaningTests(unittest.TestCase):
             self.assertTrue(utils.is_music_url(url), url)
         self.assertFalse(utils.is_music_url("https://www.youtube.com/watch?v=abc123"))
         self.assertFalse(utils.is_music_url("https://soundcloud.com.evil.example/track"))
+
+    def test_video_id_is_taken_from_common_youtube_links(self):
+        for url in (
+            "https://www.youtube.com/watch?v=LmZD-TU96q4",
+            "https://youtu.be/LmZD-TU96q4?si=abc",
+            "https://www.youtube.com/shorts/LmZD-TU96q4",
+            "https://www.youtube.com/live/LmZD-TU96q4",
+        ):
+            self.assertEqual(utils.youtube_video_id(url), "LmZD-TU96q4", url)
+        self.assertEqual(utils.youtube_video_id("https://rutube.ru/video/abc/"), "")
 
 
 
@@ -437,6 +448,131 @@ class DownloadTests(unittest.TestCase):
         self.assertIn("FFmpegSubtitlesConvertor", keys)
         self.assertNotIn("FFmpegEmbedSubtitle", keys)
         self.assertEqual(dl.progress.status, "done")
+
+    def test_fragment_asks_ffmpeg_to_retry_http_errors(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video", self.output, fragment_start=10, fragment_end=20
+        )
+        opts = self.ydl.call_args.args[0]
+        args = opts["external_downloader_args"]["ffmpeg_i"]
+        self.assertIn("400,403,404,408,429,5xx", args)
+
+    def test_fragment_without_video_is_downloaded_again(self):
+        first = MagicMock()
+        first.__enter__.return_value.download.return_value = 0
+        second = MagicMock()
+        second.__enter__.return_value.download.return_value = 0
+        self.ydl.side_effect = [first, second]
+        dl = downloader.MediaDownloader()
+        with patch.object(
+            dl, "_verify_fragment_output", side_effect=["нет видеодорожки", ""]
+        ) as verify, patch.object(dl, "_discard_broken_output") as discard:
+            dl.download("https://example.com/video", self.output, fragment_start=10, fragment_end=20)
+        self.assertEqual(self.ydl.call_count, 2)
+        self.assertEqual(verify.call_count, 2)
+        discard.assert_called_once()
+        retry_opts = self.ydl.call_args_list[1].args[0]
+        self.assertIn("avc1", retry_opts["format"])
+        self.assertEqual(dl.progress.status, "done")
+
+
+class FragmentOutputTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.output = Path(self.temp.name)
+        self.dl = downloader.MediaDownloader()
+
+    def _probe(self, payload):
+        return patch.object(
+            downloader,
+            "find_ffprobe",
+            return_value="ffprobe",
+        ), patch.object(
+            downloader.subprocess,
+            "run",
+            return_value=SimpleNamespace(returncode=0, stdout=json.dumps(payload)),
+        )
+
+    def test_cover_is_not_counted_as_video(self):
+        payload = {
+            "streams": [
+                {"codec_type": "audio", "disposition": {"attached_pic": 0}},
+                {"codec_type": "video", "disposition": {"attached_pic": 1}},
+            ]
+        }
+        probe, run = self._probe(payload)
+        with probe, run:
+            kinds = self.dl._media_streams(Path("video.mp4"))
+        self.assertEqual(kinds, {"audio"})
+
+    def test_missing_video_in_fragment_is_reported(self):
+        path = self.output / "video.mp4"
+        path.write_bytes(b"broken")
+        self.dl.progress.filename = str(path)
+        self.dl._expect_video = True
+        self.dl._expect_audio = True
+        with patch.object(self.dl, "_media_streams", return_value={"audio"}):
+            problem = self.dl._verify_fragment_output()
+        self.assertIn("видеодорожки", problem)
+
+    def test_complete_fragment_passes_checks(self):
+        path = self.output / "video.mp4"
+        path.write_bytes(b"ok")
+        self.dl.progress.filename = str(path)
+        self.dl._expect_video = True
+        self.dl._expect_audio = True
+        with patch.object(self.dl, "_media_streams", return_value={"video", "audio"}):
+            self.assertEqual(self.dl._verify_fragment_output(), "")
+
+    def test_fragment_file_is_found_by_video_id(self):
+        suffix = " [фрагмент 00-00-10-00-00-20]"
+        foreign = self.output / f"Другой ролик [aaaaaaaaaaa]{suffix}.mp4"
+        foreign.write_bytes(b"a")
+        needed = self.output / f"Нужный ролик [bbbbbbbbbbb]{suffix}.mp4"
+        needed.write_bytes(b"b")
+        sidecar = self.output / f"Нужный ролик [bbbbbbbbbbb]{suffix}.webp"
+        sidecar.write_bytes(b"c")
+        found = self.dl._find_fragment_output(suffix, self.output, "bbbbbbbbbbb")
+        self.assertEqual(found, needed)
+
+    def test_incomplete_fragment_is_removed_before_download(self):
+        suffix = " [фрагмент 00-00-10-00-00-20]"
+        path = self.output / f"Ролик [bbbbbbbbbbb]{suffix}.mp4"
+        path.write_bytes(b"broken")
+        self.dl._id_hint = "bbbbbbbbbbb"
+        self.dl._expect_video = True
+        self.dl._expect_audio = True
+        with patch.object(self.dl, "_media_streams", return_value={"audio"}):
+            self.dl._remove_broken_fragment(self.output, suffix)
+        self.assertFalse(path.exists())
+
+    def test_complete_fragment_is_kept_before_download(self):
+        suffix = " [фрагмент 00-00-10-00-00-20]"
+        path = self.output / f"Ролик [bbbbbbbbbbb]{suffix}.mp4"
+        path.write_bytes(b"ok")
+        self.dl._id_hint = "bbbbbbbbbbb"
+        self.dl._expect_video = True
+        self.dl._expect_audio = True
+        with patch.object(self.dl, "_media_streams", return_value={"video", "audio"}):
+            self.dl._remove_broken_fragment(self.output, suffix)
+        self.assertTrue(path.exists())
+
+    def test_retry_prefers_h264_only_for_best_mode(self):
+        retry = self.dl._fragment_retry_opts({"format": "bv*+ba/b"})
+        self.assertIn("avc1", retry["format"])
+        custom = self.dl._fragment_retry_opts({"format": "137"})
+        self.assertEqual(custom["format"], "137")
+
+    def test_cookie_clients_skip_unsupported_players(self):
+        order = downloader.client_order("cookies.txt")
+        flat = {client for group in order if group for client in group}
+        self.assertNotIn("visionos", flat)
+        self.assertNotIn("android_vr", flat)
+        self.assertIn("tv_samsung", flat)
+
+    def test_client_order_without_cookies_is_unchanged(self):
+        self.assertEqual(downloader.client_order(), downloader.CLIENT_FALLBACKS)
 
 
 class UpdateTests(unittest.TestCase):

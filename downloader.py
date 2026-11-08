@@ -1,5 +1,7 @@
 import os
+import json
 import logging
+import subprocess
 from copy import copy
 import threading
 import uuid
@@ -9,7 +11,15 @@ from typing import Any, Callable, Dict
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
 
-from utils import clean_media_url, find_ffmpeg, prepare_media_url, format_time_value
+from utils import (
+    CREATE_NO_WINDOW,
+    clean_media_url,
+    find_ffmpeg,
+    find_ffprobe,
+    format_time_value,
+    prepare_media_url,
+    youtube_video_id,
+)
 from pot import find_deno, server_running, start_server
 from diagnostics import register_cookie_secrets, register_secret, report_exception
 
@@ -64,9 +74,36 @@ RETRYABLE_MARKERS = (
     "http error 403",
     "http error 5",
     "unable to connect",
+    "нет видеодорожки",
+    "нет звуковой дорожки",
 )
 
-MAX_ATTEMPTS = len(CLIENT_FALLBACKS)
+# Клиенты, которые yt-dlp пропускает, если переданы cookies. Если запросить
+# только такой клиент, форматов не останется и попытка провалится впустую.
+COOKIE_UNSUPPORTED_CLIENTS = {"visionos", "android_vr"}
+
+# Сколько раз повторять загрузку тем же клиентом, если файл фрагмента вышел
+# без нужной дорожки. Повтор берёт свежие ссылки на потоки.
+FRAGMENT_RETRIES = 1
+
+
+def client_order(cookies_file: str | None = None, cookies_from_browser: str | None = None) -> list[list[str] | None]:
+    """Порядок попыток с учётом cookies.
+
+    С cookies yt-dlp пропускает visionos и android_vr, поэтому такие попытки
+    заведомо пустые. Без cookies порядок прежний.
+    """
+    if not (cookies_file or cookies_from_browser):
+        return list(CLIENT_FALLBACKS)
+    order: list[list[str] | None] = []
+    for clients in CLIENT_FALLBACKS:
+        if clients is None:
+            order.append(None)
+            continue
+        usable = [client for client in clients if client not in COOKIE_UNSUPPORTED_CLIENTS]
+        if usable:
+            order.append(usable)
+    return order or list(CLIENT_FALLBACKS)
 
 # Языки субтитров по умолчанию: русский и английский.
 SUBTITLE_LANGS_DEFAULT = "ru,en"
@@ -176,6 +213,9 @@ class MediaDownloader:
         self._stop_event = threading.Event()
         self._ydl = None
         self._url = ""
+        self._id_hint = ""
+        self._expect_video = False
+        self._expect_audio = False
         self.job_id = uuid.uuid4().hex[:12]
         self.logger = logging.LoggerAdapter(logging.getLogger("media_downloader.downloader"), {"job": self.job_id})
         self._last_log_state = None
@@ -228,20 +268,22 @@ class MediaDownloader:
             base_opts["ffmpeg_location"] = ffmpeg
 
         last_error = ""
+        clients_order = client_order(cookies_file, cookies_from_browser)
+        attempts = len(clients_order)
 
-        for attempt in range(1, MAX_ATTEMPTS + 1):
+        for attempt in range(1, attempts + 1):
             if self._stop_event.is_set():
                 raise RuntimeError("Отменено")
             opts = dict(base_opts)
-            self.logger.info("Extract attempt=%s/%s clients=%s", attempt, MAX_ATTEMPTS, CLIENT_FALLBACKS[attempt - 1])
+            self.logger.info("Extract attempt=%s/%s clients=%s", attempt, attempts, clients_order[attempt - 1])
             ensure_pot_server()
-            opts.update(build_runtime_opts(clients=CLIENT_FALLBACKS[attempt - 1], proxy=proxy))
+            opts.update(build_runtime_opts(clients=clients_order[attempt - 1], proxy=proxy))
             try:
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
                 if not info:
                     last_error = "YouTube не вернул данные по этой ссылке"
-                    if attempt < MAX_ATTEMPTS:
+                    if attempt < attempts:
                         if self._stop_event.wait(2 * attempt):
                             raise RuntimeError("Отменено")
                         continue
@@ -267,7 +309,7 @@ class MediaDownloader:
                 self.logger.warning("Extract attempt failed unexpectedly", exc_info=True)
                 last_error = self._clean_error(str(e))
 
-            if attempt < MAX_ATTEMPTS and self._should_retry(last_error):
+            if attempt < attempts and self._should_retry(last_error):
                 if self._stop_event.wait(2 * attempt):
                     raise RuntimeError("Отменено")
                 continue
@@ -318,6 +360,9 @@ class MediaDownloader:
                          sponsor_mode, sponsor_categories, output_dir)
         self.progress = DownloadProgress()
         self._url = url
+        self._id_hint = youtube_video_id(url)
+        self._expect_video = False
+        self._expect_audio = False
         self.progress.status = "extracting"
         self._emit()
 
@@ -377,6 +422,19 @@ class MediaDownloader:
             # расходятся на несколько секунд. Повторное кодирование делает
             # обрезку точной.
             opts["force_keyframes_at_cuts"] = True
+            # Фрагмент всегда качает ffmpeg. Иногда YouTube отвечает 400 на
+            # запрос видеодиапазона, и ffmpeg молча заканчивает файл без
+            # видео. Просим ffmpeg повторить такой запрос, а не сдаваться.
+            opts["external_downloader_args"] = {
+                "ffmpeg_i": [
+                    "-reconnect", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_on_network_error", "1",
+                    "-reconnect_on_http_error", "400,403,404,408,429,5xx",
+                    "-reconnect_delay_max", "5",
+                    "-reconnect_max_retries", "5",
+                ],
+            }
             self.logger.info("Fragment: start=%s end=%s", fragment_start, fragment_end)
 
         if cookies_file:
@@ -395,6 +453,25 @@ class MediaDownloader:
         if ffmpeg:
             opts["ffmpeg_location"] = ffmpeg
         self.logger.info("FFmpeg location: %s", ffmpeg or "not found")
+
+        # Ожидаемые дорожки известны уже по выбранному режиму. Точные данные
+        # придут из progress hook, но запасной вариант нужен и тогда, когда
+        # yt-dlp пропускает уже существующий файл и hook не срабатывает.
+        if mode == "audio" or custom_audio_only:
+            self._expect_video, self._expect_audio = False, True
+        elif mode == "video":
+            self._expect_video, self._expect_audio = True, False
+        elif mode == "custom":
+            # В таблице форматов может быть и видео без звука, и готовая пара.
+            # Поэтому для произвольного формата проверяем только видео.
+            self._expect_video, self._expect_audio = True, False
+        else:
+            self._expect_video, self._expect_audio = True, True
+
+        if fragment_enabled:
+            # Прошлая неудачная попытка могла оставить файл без видео. Если его
+            # не убрать, yt-dlp решит, что всё уже скачано, и не начнёт заново.
+            self._remove_broken_fragment(output_dir, fragment_suffix)
 
         postprocessors: list[dict] = []
         if mode == "audio":
@@ -520,24 +597,42 @@ class MediaDownloader:
             return None, ""
 
         try:
-            for attempt in range(1, MAX_ATTEMPTS + 1):
+            clients_order = client_order(cookies_file, cookies_from_browser)
+            attempts = len(clients_order)
+            for attempt in range(1, attempts + 1):
                 if self._stop_event.is_set():
                     self.progress.status = "cancelled"
                     return
 
                 attempt_opts = dict(opts)
-                self.logger.info("Download attempt=%s/%s clients=%s", attempt, MAX_ATTEMPTS, CLIENT_FALLBACKS[attempt - 1])
+                self.logger.info("Download attempt=%s/%s clients=%s", attempt, attempts, clients_order[attempt - 1])
                 ensure_pot_server()
-                attempt_opts.update(build_runtime_opts(clients=CLIENT_FALLBACKS[attempt - 1], proxy=proxy))
+                attempt_opts.update(build_runtime_opts(clients=clients_order[attempt - 1], proxy=proxy))
 
                 # Если необязательный шаг не удался (обложка, вшивание
                 # субтитров, SponsorBlock), повторяем без него: сам файл
                 # важнее оформления.
                 run_opts = attempt_opts
                 attempt_error = ""
+                fragment_try = 0
                 for _ in range(4):
                     try:
                         run(run_opts)
+                        if fragment_enabled and not self.progress.is_playlist:
+                            problem = self._verify_fragment_output(fragment_suffix, output_dir)
+                            if problem:
+                                self._discard_broken_output()
+                                if fragment_try < FRAGMENT_RETRIES:
+                                    fragment_try += 1
+                                    attempt_error = problem
+                                    self.logger.warning(
+                                        "Fragment is incomplete, retrying with fresh links: %s", problem
+                                    )
+                                    self.progress.retry_message = "Видео не попало в файл, повторяю загрузку..."
+                                    self._emit()
+                                    run_opts = self._fragment_retry_opts(run_opts)
+                                    continue
+                                raise DownloadError(problem)
                         attempt_error = ""
                         break
                     except (DownloadError, ExtractorError) as e:
@@ -572,10 +667,10 @@ class MediaDownloader:
                     return
 
                 last_error = attempt_error
-                if attempt < MAX_ATTEMPTS and self._should_retry(last_error):
+                if attempt < attempts and self._should_retry(last_error):
                     self.progress.status = "extracting"
                     self.progress.retry_message = (
-                        f"Попытка {attempt} не удалась, пробую способ {attempt + 1} из {MAX_ATTEMPTS}..."
+                        f"Попытка {attempt} не удалась, пробую способ {attempt + 1} из {attempts}..."
                     )
                     self.progress.error = last_error
                     self._emit()
@@ -642,8 +737,139 @@ class MediaDownloader:
         elif status == "finished":
             self.progress.status = "merging"
             self.progress.percent = 99.0
+            self._remember_expected_streams(info)
         elif status == "error":
             self.progress.status = "error"
             self.progress.error = str(d.get("error", "Unknown error"))
 
         self._emit()
+
+    def _remember_expected_streams(self, info: Dict[str, Any]) -> None:
+        """Запоминает, какие дорожки должны оказаться в готовом файле.
+
+        YouTube иногда отвечает ошибкой на запрос видеодиапазона, а ffmpeg
+        завершает работу без видео и с кодом 0. yt-dlp считает такую загрузку
+        успешной. Ожидаемые дорожки берём из выбранных форматов, чтобы потом
+        проверить результат.
+        """
+        requested = info.get("requested_formats") or []
+        if requested:
+            self._expect_video = any(f.get("vcodec") not in (None, "none") for f in requested)
+            self._expect_audio = any(f.get("acodec") not in (None, "none") for f in requested)
+        else:
+            self._expect_video = info.get("vcodec") not in (None, "none")
+            self._expect_audio = info.get("acodec") not in (None, "none")
+
+    @staticmethod
+    def _media_streams(path: Path) -> set[str] | None:
+        """Типы дорожек в файле или ``None``, если проверить не удалось.
+
+        Обложка тоже является видеопотоком (mjpeg с attached_pic), поэтому её
+        не считаем видео.
+        """
+        ffprobe = find_ffprobe()
+        if not ffprobe:
+            return None
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe, "-v", "error",
+                    "-show_entries", "stream=codec_type:stream_disposition=attached_pic",
+                    "-of", "json", str(path),
+                ],
+                capture_output=True, text=True, timeout=30,
+                creationflags=CREATE_NO_WINDOW,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout or "{}")
+        except ValueError:
+            return None
+        kinds: set[str] = set()
+        for stream in data.get("streams") or []:
+            if stream.get("codec_type") == "video":
+                if (stream.get("disposition") or {}).get("attached_pic"):
+                    continue
+                kinds.add("video")
+            elif stream.get("codec_type") == "audio":
+                kinds.add("audio")
+        return kinds
+
+    def _verify_fragment_output(self, suffix: str = "", output_dir: Path | None = None) -> str:
+        """Проверяет, что после обрезки остались нужные дорожки."""
+        path = Path(self.progress.filename or "")
+        if not path.is_file() and suffix and output_dir is not None:
+            path = self._find_fragment_output(suffix, output_dir, self._id_hint) or path
+        if not path.is_file():
+            return ""
+        self.progress.filename = str(path)
+        kinds = self._media_streams(path)
+        if kinds is None:
+            return ""
+        if self._expect_video and "video" not in kinds:
+            return "В скачанном файле нет видеодорожки — пробую другой способ."
+        if self._expect_audio and "audio" not in kinds:
+            return "В скачанном файле нет звуковой дорожки — пробую другой способ."
+        return ""
+
+    def _remove_broken_fragment(self, output_dir: Path, suffix: str) -> None:
+        """Убирает прошлый неполный файл фрагмента до начала загрузки."""
+        path = self._find_fragment_output(suffix, output_dir, self._id_hint)
+        if path is None:
+            return
+        kinds = self._media_streams(path)
+        if kinds is None:
+            return
+        if (self._expect_video and "video" not in kinds) or (
+            self._expect_audio and "audio" not in kinds
+        ):
+            self.logger.info("Removing incomplete fragment output: %s", path)
+            self._unlink_output(path)
+
+    @staticmethod
+    def _find_fragment_output(suffix: str, output_dir: Path, id_hint: str = "") -> Path | None:
+        """Ищет готовый файл фрагмента, если yt-dlp не сообщил его имя.
+
+        Так бывает, когда файл уже существует: yt-dlp пишет «already been
+        downloaded» и не вызывает progress hook. Идентификатор ролика не даёт
+        перепутать файлы с одинаковым суффиксом фрагмента. Без идентификатора
+        поиск не выполняется: удалять или проверять чужой файл нельзя.
+        """
+        if not id_hint:
+            return None
+        needle = f"[{id_hint}]{suffix}"
+        skip = {".part", ".ytdl", ".jpg", ".webp", ".png", ".srt", ".vtt", ".ass", ".json"}
+        found: list[Path] = []
+        try:
+            for path in output_dir.iterdir():
+                if needle in path.name and path.is_file() and path.suffix.lower() not in skip:
+                    found.append(path)
+        except OSError:
+            return None
+        return max(found, key=lambda p: p.stat().st_mtime, default=None)
+
+    @staticmethod
+    def _fragment_retry_opts(run_opts: Dict[str, Any]) -> Dict[str, Any]:
+        """На повторе просит H.264: с ним реже срывается запрос диапазона."""
+        retry = dict(run_opts)
+        if retry.get("format") == "bv*+ba/b":
+            retry["format"] = "bv*[vcodec^=avc1]+ba/bv*[vcodec^=avc1]+b/bv*+ba/b"
+        return retry
+
+    def _discard_broken_output(self) -> None:
+        """Удаляет неполный файл, чтобы следующая попытка не считала его готовым."""
+        path = Path(self.progress.filename or "")
+        if not path.name:
+            return
+        self._unlink_output(path)
+        self.progress.filename = ""
+
+    def _unlink_output(self, path: Path) -> None:
+        for candidate in (path, path.with_name(path.name + ".part"), path.with_name(path.name + ".ytdl")):
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                self.logger.warning("Could not remove broken output: %s", candidate, exc_info=True)
