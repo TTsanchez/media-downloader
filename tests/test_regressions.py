@@ -79,6 +79,48 @@ class UrlCleaningTests(unittest.TestCase):
 
 
 
+class TimeValueTests(unittest.TestCase):
+    def test_plain_seconds(self):
+        self.assertEqual(utils.parse_time_value("90"), 90.0)
+        self.assertEqual(utils.parse_time_value(" 0 "), 0.0)
+
+    def test_minutes_and_seconds(self):
+        self.assertEqual(utils.parse_time_value("1:30"), 90.0)
+        self.assertEqual(utils.parse_time_value("01:05"), 65.0)
+
+    def test_hours_minutes_and_seconds(self):
+        self.assertEqual(utils.parse_time_value("01:02:03"), 3723.0)
+        self.assertEqual(utils.parse_time_value("2:00:00"), 7200.0)
+
+    def test_fractional_seconds(self):
+        self.assertEqual(utils.parse_time_value("0:05.5"), 5.5)
+        self.assertEqual(utils.parse_time_value("5,25"), 5.25)
+
+    def test_invalid_values_are_rejected(self):
+        for text in ("", "abc", "1:75", "1:2:3:4", "-5", "1:-2"):
+            with self.assertRaises(ValueError, msg=text):
+                utils.parse_time_value(text)
+
+    def test_range_defaults_to_whole_video(self):
+        self.assertEqual(utils.parse_time_range("", ""), (0.0, None))
+
+    def test_range_with_open_end(self):
+        self.assertEqual(utils.parse_time_range("1:00", ""), (60.0, None))
+
+    def test_range_with_open_start(self):
+        self.assertEqual(utils.parse_time_range("", "0:30"), (0.0, 30.0))
+
+    def test_range_end_must_be_after_start(self):
+        for start, end in (("10", "10"), ("1:00", "0:59")):
+            with self.assertRaises(ValueError):
+                utils.parse_time_range(start, end)
+
+    def test_filename_time_format(self):
+        self.assertEqual(utils.format_time_value(0), "00-00-00")
+        self.assertEqual(utils.format_time_value(3723), "01-02-03")
+        self.assertEqual(utils.format_time_value(-5), "00-00-00")
+
+
 class DownloadTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -114,6 +156,57 @@ class DownloadTests(unittest.TestCase):
     def test_invalid_range_reports_error_without_downloading(self):
         dl = downloader.MediaDownloader()
         dl.download("https://example.com/list", self.output, playlist_start=5, playlist_end=2)
+        self.assertEqual(dl.progress.status, "error")
+        self.ydl.assert_not_called()
+
+    def test_fragment_limits_download_range(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video", self.output, fragment_start=60, fragment_end=120
+        )
+        opts = self.ydl.call_args.args[0]
+        ranges = opts["download_ranges"]({}, self.ydl)
+        self.assertEqual(ranges, [{"start_time": 60, "end_time": 120}])
+        self.assertTrue(opts["force_keyframes_at_cuts"])
+
+    def test_fragment_adds_suffix_to_filename(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video", self.output, fragment_start=60, fragment_end=120
+        )
+        template = self.ydl.call_args.args[0]["outtmpl"]
+        self.assertIn("[фрагмент 00-01-00-00-02-00]", template)
+
+    def test_fragment_without_end_downloads_to_the_end(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video", self.output, fragment_start=60
+        )
+        opts = self.ydl.call_args.args[0]
+        self.assertIsNone(opts["download_ranges"]({}, self.ydl)[0]["end_time"])
+        self.assertIn("[фрагмент 00-01-00-конец]", opts["outtmpl"])
+
+    def test_fragment_without_start_begins_at_zero(self):
+        downloader.MediaDownloader().download(
+            "https://example.com/video", self.output, fragment_end=90
+        )
+        opts = self.ydl.call_args.args[0]
+        self.assertEqual(opts["download_ranges"]({}, self.ydl)[0]["start_time"], 0)
+        self.assertIn("[фрагмент 00-00-00-00-01-30]", opts["outtmpl"])
+
+    def test_no_fragment_downloads_whole_video(self):
+        downloader.MediaDownloader().download("https://example.com/video", self.output)
+        opts = self.ydl.call_args.args[0]
+        self.assertNotIn("download_ranges", opts)
+        self.assertNotIn("force_keyframes_at_cuts", opts)
+        self.assertNotIn("фрагмент", opts["outtmpl"])
+
+    def test_invalid_fragment_reports_error_without_downloading(self):
+        dl = downloader.MediaDownloader()
+        dl.download("https://example.com/video", self.output, fragment_start=60, fragment_end=30)
+        self.assertEqual(dl.progress.status, "error")
+        self.ydl.assert_not_called()
+
+    def test_negative_fragment_start_is_rejected(self):
+        dl = downloader.MediaDownloader()
+        dl.download("https://example.com/video", self.output, fragment_start=-1)
         self.assertEqual(dl.progress.status, "error")
         self.ydl.assert_not_called()
 

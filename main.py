@@ -95,6 +95,7 @@ from utils import (
     is_newer_app_version,
     is_newer_version,
     looks_like_url,
+    parse_time_range,
     tools_root,
     download_file,
     create_updater_script,
@@ -351,6 +352,24 @@ class YTApp(ttkb.Window):
         except (ValueError, tk.TclError):
             raise ValueError("Укажите целые номера: начало от 1, конец не меньше начала или 0 — до конца.") from None
         return start, end
+
+    def _fragment_range(self) -> tuple[float, float | None]:
+        if not self.fragment_var.get():
+            return 0.0, None
+        start_text = self.fragment_start_var.get().strip()
+        end_text = self.fragment_end_var.get().strip()
+        if not start_text and not end_text:
+            raise ValueError("Укажите начало или конец фрагмента.")
+        return parse_time_range(start_text, end_text)
+
+    def _on_fragment_change(self):
+        state = "normal" if self.fragment_var.get() else "disabled"
+        for entry in (self.ent_frag_start, self.ent_frag_end):
+            entry.configure(state=state)
+        if self.fragment_var.get():
+            self.ent_frag_start.focus_set()
+        self._refresh_estimate_label()
+        self._update_state()
 
     def _on_url_change(self, *_args):
         if self._paused_download and not self.is_downloading:
@@ -692,6 +711,9 @@ class YTApp(ttkb.Window):
         self.eta_var = v(value="—")
         self.size_var = v(value="—")
         self.preset_var = v(value=QUALITY_PRESETS[0])
+        self.fragment_var = tk.BooleanVar(value=False)
+        self.fragment_start_var = v()
+        self.fragment_end_var = v()
         self._last_clip = ""
         self._ui_ready = False
 
@@ -790,6 +812,38 @@ class YTApp(ttkb.Window):
         ttkb.Label(
             preset_row,
             text="Ограничивает разрешение, не трогая остальные настройки",
+            bootstyle="secondary",
+            font=("Segoe UI", 8),
+        ).pack(side=LEFT, padx=(10, 0))
+
+        frag_row = ttkb.Frame(fbox)
+        frag_row.pack(fill=X, pady=(8, 0))
+        self.chk_fragment = ttkb.Checkbutton(
+            frag_row, text="Фрагмент:", variable=self.fragment_var,
+            bootstyle="round-toggle", command=self._on_fragment_change,
+        )
+        self.chk_fragment.pack(side=LEFT)
+        add_tooltip(
+            self.chk_fragment,
+            "Скачать только часть ролика. Время — чч:мм:сс или мм:сс. "
+            "Пустое начало — с начала, пустой конец — до конца. "
+            "Действует для одиночной загрузки; в очереди фрагмент не применяется.",
+        )
+        ttkb.Label(frag_row, text="с", bootstyle="secondary").pack(side=LEFT, padx=(10, 4))
+        self.ent_frag_start = ttkb.Entry(
+            frag_row, textvariable=self.fragment_start_var, width=10, state="disabled",
+        )
+        self.ent_frag_start.pack(side=LEFT)
+        ttkb.Label(frag_row, text="по", bootstyle="secondary").pack(side=LEFT, padx=(8, 4))
+        self.ent_frag_end = ttkb.Entry(
+            frag_row, textvariable=self.fragment_end_var, width=10, state="disabled",
+        )
+        self.ent_frag_end.pack(side=LEFT)
+        for entry in (self.ent_frag_start, self.ent_frag_end):
+            entry.bind("<KeyRelease>", lambda e: self._refresh_estimate_label())
+        ttkb.Label(
+            frag_row,
+            text="чч:мм:сс; пусто — от начала или до конца",
             bootstyle="secondary",
             font=("Segoe UI", 8),
         ).pack(side=LEFT, padx=(10, 0))
@@ -1768,6 +1822,32 @@ class YTApp(ttkb.Window):
             return None
         return info
 
+    def _fragment_ratio(self, info: dict | None = None) -> float:
+        """Какая доля ролика попадёт в файл при включённом фрагменте."""
+        if not self.fragment_var.get():
+            return 1.0
+        try:
+            start, end = self._fragment_range()
+        except ValueError:
+            return 1.0
+        src = self._pick_format_source(info if info is not None else self._current_info or {}) or {}
+        duration = src.get("duration") or 0
+        if not duration:
+            return 1.0
+        stop = end if end is not None else float(duration)
+        return max(0.0, min(1.0, (stop - start) / float(duration)))
+
+    def _refresh_estimate_label(self):
+        """Пересчитывает ожидаемый размер после смены фрагмента или пресета."""
+        base = getattr(self, "_meta_base", "")
+        if not base or not getattr(self, "_meta_single", False):
+            return
+        estimate = self._estimate_size()
+        text = base
+        if estimate:
+            text += f" · Ожидаемый размер: ~{format_bytes(estimate)}"
+        self.meta_lbl.config(text=text)
+
     def _estimate_size(self, info: dict | None = None, height: int | None = None) -> int:
         """Оценка размера до скачивания по данным форматов yt-dlp."""
         src = self._pick_format_source(info if info is not None else self._current_info or {})
@@ -1787,13 +1867,14 @@ class YTApp(ttkb.Window):
         best_audio = max(audio, key=size_of) if audio else None
 
         if self.format_var.get() == "bestaudio":
-            return size_of(best_audio) if best_audio else 0
-        if self.format_var.get() == "bestvideo" and not self._selected_format:
-            return size_of(best_video) if best_video else 0
-        total = (size_of(best_video) if best_video else 0)
-        if best_audio and not self._selected_audio_only:
-            total += size_of(best_audio)
-        return total
+            total = size_of(best_audio) if best_audio else 0
+        elif self.format_var.get() == "bestvideo" and not self._selected_format:
+            total = size_of(best_video) if best_video else 0
+        else:
+            total = (size_of(best_video) if best_video else 0)
+            if best_audio and not self._selected_audio_only:
+                total += size_of(best_audio)
+        return int(total * self._fragment_ratio(src))
 
     def _on_preset_change(self, _event=None):
         value = self.preset_var.get()
@@ -3022,10 +3103,9 @@ class YTApp(ttkb.Window):
             f" · Длительность: {duration} · Канал: {channel}"
             + (f" · Качество: {info['height']}p" if info.get("height") else "")
         )
-        estimate = self._estimate_size(info)
-        if estimate and not is_playlist:
-            meta += f" · Ожидаемый размер: ~{format_bytes(estimate)}"
-        self.meta_lbl.config(text=meta)
+        self._meta_base = meta
+        self._meta_single = not is_playlist
+        self._refresh_estimate_label()
         self._show_preview(url, info.get("thumbnail") or "")
         self._log(f"Готово: {title} ({count} шт.)")
 
@@ -3136,6 +3216,11 @@ class YTApp(ttkb.Window):
         except ValueError as e:
             messagebox.showwarning("Диапазон плейлиста", str(e))
             return
+        try:
+            frag_start, frag_end = self._fragment_range()
+        except ValueError as e:
+            messagebox.showwarning("Фрагмент", str(e))
+            return
 
         out_dir = Path(self.output_dir_var.get() or str(get_default_download_dir()))
         try:
@@ -3189,6 +3274,8 @@ class YTApp(ttkb.Window):
             sub_embed=bool(self.sub_embed_var.get()),
             sponsor_mode=self._sponsor_mode_key(),
             sponsor_categories=self._sponsor_categories(),
+            fragment_start=frag_start,
+            fragment_end=frag_end,
         )
         self._last_download_args = dict(args)
         threading.Thread(target=self._worker, args=(args,), daemon=True).start()

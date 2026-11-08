@@ -537,6 +537,52 @@ def prepare_media_url(url: str) -> str:
     return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
 
 
+def parse_time_value(text: str) -> float:
+    """Переводит время из ``05:30`` или ``1:05:30`` в секунды.
+
+    Принимает также простое число секунд. Дробная часть отделяется точкой
+    или запятой.
+    """
+    value = (text or "").strip().replace(",", ".")
+    if not value:
+        raise ValueError("Укажите время.")
+    if re.fullmatch(r"\d+(?:\.\d+)?", value):
+        return float(value)
+    match = re.fullmatch(r"(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?", value)
+    if not match:
+        raise ValueError("Время указывается как 05:30 или 1:05:30.")
+    hours, minutes, seconds, fraction = match.groups()
+    minutes = int(minutes)
+    seconds = int(seconds)
+    if minutes > 59 or seconds > 59:
+        raise ValueError("В минутах и секундах должно быть меньше 60.")
+    total = int(hours or 0) * 3600 + minutes * 60 + seconds
+    if fraction:
+        total += float("0." + fraction)
+    return float(total)
+
+
+def parse_time_range(start_text: str, end_text: str) -> tuple[float, float | None]:
+    """Разбирает начало и конец фрагмента.
+
+    Пустое начало означает 0, пустой конец — «до конца видео». Конец должен
+    быть позже начала.
+    """
+    start = parse_time_value(start_text) if (start_text or "").strip() else 0.0
+    end = parse_time_value(end_text) if (end_text or "").strip() else None
+    if end is not None and end <= start:
+        raise ValueError("Конец фрагмента должен быть позже начала.")
+    return start, end
+
+
+def format_time_value(seconds: float) -> str:
+    """Форматирует секунды для имени файла: ``01-02-03``."""
+    total = max(0, int(round(seconds)))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}-{minutes:02d}-{secs:02d}"
+
+
 def is_music_url(url: str) -> bool:
     """Ссылка ведёт на музыкальный сервис, а не на видео."""
     try:

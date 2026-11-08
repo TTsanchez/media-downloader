@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
 
-from utils import clean_media_url, find_ffmpeg, prepare_media_url
+from utils import clean_media_url, find_ffmpeg, prepare_media_url, format_time_value
 from pot import find_deno, server_running, start_server
 from diagnostics import register_cookie_secrets, register_secret, report_exception
 
@@ -303,6 +303,8 @@ class MediaDownloader:
         sub_embed: bool = True,
         sponsor_mode: str = "off",
         sponsor_categories: list[str] | None = None,
+        fragment_start: float = 0.0,
+        fragment_end: float | None = None,
     ):
         register_cookie_secrets(cookies_file)
         url = prepare_media_url(clean_media_url(url))
@@ -327,6 +329,8 @@ class MediaDownloader:
         try:
             if playlist_start < 1 or playlist_end < 0 or (playlist_end and playlist_end < playlist_start):
                 raise ValueError("Проверьте диапазон плейлиста: конец должен быть не меньше начала.")
+            if fragment_start < 0 or (fragment_end is not None and fragment_end <= fragment_start):
+                raise ValueError("Проверьте фрагмент: конец должен быть позже начала.")
             output_dir.mkdir(parents=True, exist_ok=True)
         except (OSError, ValueError) as e:
             self.logger.exception("Download preparation failed")
@@ -336,7 +340,12 @@ class MediaDownloader:
             return
 
         title_template = "%(title).60s" if restrict_filenames else "%(title)s"
-        outtmpl = str(output_dir / f"{title_template} [%(id)s].%(ext)s")
+        fragment_enabled = fragment_end is not None or fragment_start > 0
+        fragment_suffix = ""
+        if fragment_enabled:
+            end_label = format_time_value(fragment_end) if fragment_end is not None else "конец"
+            fragment_suffix = f" [фрагмент {format_time_value(fragment_start)}-{end_label}]"
+        outtmpl = str(output_dir / f"{title_template} [%(id)s]{fragment_suffix}.%(ext)s")
 
         opts: Dict[str, Any] = {
             "quiet": True,
@@ -358,6 +367,17 @@ class MediaDownloader:
             "socket_timeout": 30,
             "windowsfilenames": os.name == "nt",
         }
+
+        if fragment_enabled:
+            opts["download_ranges"] = lambda info, ydl: [{
+                "start_time": fragment_start,
+                "end_time": fragment_end,
+            }]
+            # Без этого yt-dlp режет по ближайшим ключевым кадрам и границы
+            # расходятся на несколько секунд. Повторное кодирование делает
+            # обрезку точной.
+            opts["force_keyframes_at_cuts"] = True
+            self.logger.info("Fragment: start=%s end=%s", fragment_start, fragment_end)
 
         if cookies_file:
             opts["cookiefile"] = cookies_file
